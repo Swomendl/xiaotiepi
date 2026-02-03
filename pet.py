@@ -170,6 +170,11 @@ class Pet:
         self.sleep_disturb_state = None  # None, 'sleepy', 'annoyed', 'super_annoyed'
         self.sleep_disturb_timer = 0
 
+        # 情绪系统状态
+        self.apology_dialog = None  # 道歉对话框
+        self.cold_war_tick_timer = 0  # 冷战计时器
+        self.last_cold_war_bubble = 0  # 上次冷战气泡时间
+
         # 梦境系统
         self.is_dreaming = False
         self.dream_type = None  # 'good', 'bad', None
@@ -355,6 +360,15 @@ class Pet:
             else:
                 frames = get_sprite(body_type, 'walk')
             return frames[self.walk_frame % len(frames)]
+
+        # 检查情绪状态（优先级高于普通状态）
+        emotion_state = self.save_manager.get_emotion_state()
+        if emotion_state == 'super_annoyed':
+            return get_sprite(body_type, 'super_annoyed')[0]
+        elif emotion_state in ['angry', 'annoyed']:
+            return get_sprite(body_type, 'angry')[0]
+        elif emotion_state in ['sad', 'very_sad']:
+            return get_sprite(body_type, 'lonely')[0]
 
         status = self.save_manager.get_status()
         frames = get_sprite(body_type, status)
@@ -638,6 +652,12 @@ class Pet:
         self._update_comfort()
         self._update_happy_event()
         self._update_reading()
+
+        # 冷战计时（每秒更新一次，tick 是 50ms，所以每 20 次 tick 更新一次）
+        self.cold_war_tick_timer += 1
+        if self.cold_war_tick_timer >= 20:
+            self.cold_war_tick_timer = 0
+            self._update_cold_war()
 
         if self.is_dizzy or self.is_falling:
             self._draw()
@@ -926,27 +946,47 @@ class Pet:
         self.base_y = self.y  # 更新基准位置
 
     def _handle_click(self) -> None:
-        self.save_manager.record_click()
         self.save_manager.record_interaction()
 
         if self.save_manager.data.get('is_dead'):
             self.bubble.show('……(右键可以复活我)')
             return
 
-        status = self.save_manager.get_status()
+        # 检查情绪状态
+        emotion_state = self.save_manager.get_emotion_state()
+        anger_level = self.save_manager.get_new_anger_level()
 
-        if status == 'angry':
-            anger_level = self.save_manager.get_anger_level()
-            if anger_level >= 3:
-                self.bubble.say_random('angry_severe')
-            elif anger_level >= 2:
-                self.bubble.say_random('angry')
-            else:
-                self.bubble.say_random('angry_mild')
+        # 超级不爽：完全不响应点击
+        if anger_level >= 3:
+            if random.random() < 0.3:
+                self.bubble.say_random('cold_war')
             return
 
+        # 生气中：响应但不给正面反馈
+        if anger_level >= 2:
+            self.bubble.say_random('cold_war')
+            return
+
+        # 轻微不满：警告
+        if anger_level >= 1:
+            self.bubble.say_random('angry_mild')
+            # 继续计数，可能升级
+            triggered = self.save_manager.add_anger_click()
+            if triggered and triggered >= 2:
+                self._on_anger_triggered(triggered)
+            return
+
+        # 深夜睡觉状态
+        status = self.save_manager.get_status()
         if status == 'sleep':
-            self._trigger_sleep_disturb()
+            self._trigger_sleep_disturb_emotion()
+            return
+
+        # 正常状态下，记录点击并检查是否触发生气
+        self.save_manager.record_click()
+        triggered = self.save_manager.add_anger_click()
+        if triggered:
+            self._on_anger_triggered(triggered)
             return
 
         # 噩梦后安慰（摸头）
@@ -984,7 +1024,11 @@ class Pet:
             return
 
         if self.save_manager.is_sleep_time():
-            self._trigger_sleep_disturb()
+            self._trigger_sleep_disturb_emotion()
+            return
+
+        # 冷战期间特殊处理
+        if self._feed_with_emotion():
             return
 
         full_bonus, full_service = self.save_manager.feed()
@@ -1008,7 +1052,7 @@ class Pet:
             return
 
         if self.save_manager.is_sleep_time():
-            self._trigger_sleep_disturb()
+            self._trigger_sleep_disturb_emotion()
             return
 
         clean_bonus, full_service = self.save_manager.bath()
@@ -1032,7 +1076,7 @@ class Pet:
             return
 
         if self.save_manager.is_sleep_time():
-            self._trigger_sleep_disturb()
+            self._trigger_sleep_disturb_emotion()
             return
 
         full_service = self.save_manager.play()
@@ -1171,14 +1215,13 @@ class Pet:
         self.is_dizzy = True
         self.dizzy_timer = 60
         self.drag_history = []
-        self.shake_count += 1
 
         self.save_manager.modify_stat('happiness', -10)
 
-        if self.shake_count >= 4:
-            self.shake_angry = True
-            self.shake_angry_timer = 300
-            self.save_manager.modify_stat('happiness', -20)
+        # 使用新的情绪系统处理摇晃
+        triggered = self.save_manager.add_anger_shake()
+        if triggered:
+            self._on_anger_triggered(triggered)
             self.bubble.say_random('angry_shake')
         else:
             self.bubble.say_random('dizzy')
@@ -1187,6 +1230,150 @@ class Pet:
         """开始下落"""
         self.is_falling = True
         self.fall_velocity = 0
+
+    # ========== 情绪系统方法 ==========
+
+    def _on_anger_triggered(self, level: int) -> None:
+        """当生气被触发时"""
+        if level >= 3:
+            self.bubble.say_random('angry_severe')
+            # 超级不爽时弹出道歉对话框
+            self.root.after(500, self._show_apology_dialog)
+        elif level >= 2:
+            self.bubble.say_random('angry')
+
+    def _trigger_sleep_disturb_emotion(self) -> None:
+        """使用情绪系统处理深夜打扰"""
+        triggered = self.save_manager.handle_night_disturb()
+        if triggered:
+            if triggered == 1:
+                self.bubble.say_random('night_disturb_1')
+                self.sleep_disturb_state = 'sleepy'
+            elif triggered == 2:
+                self.bubble.say_random('night_disturb_2')
+                self.sleep_disturb_state = 'annoyed'
+            else:
+                self.bubble.say_random('night_disturb_3')
+                self.sleep_disturb_state = 'super_annoyed'
+                # 超级不爽时弹出道歉对话框
+                self.root.after(500, self._show_apology_dialog)
+            self.sleep_disturb_timer = 100
+
+    def _show_apology_dialog(self) -> None:
+        """显示道歉输入框"""
+        if self.apology_dialog is not None:
+            return  # 已经显示了
+
+        if not self.save_manager.should_show_apology_dialog():
+            return
+
+        self.apology_dialog = tk.Toplevel(self.root)
+        self.apology_dialog.title("")
+        self.apology_dialog.overrideredirect(True)
+        self.apology_dialog.attributes('-topmost', True)
+
+        # 定位在小铁皮上方
+        pet_x, pet_y = self.root.winfo_x(), self.root.winfo_y()
+        self.apology_dialog.geometry(f"+{pet_x - 30}+{pet_y - 100}")
+
+        # 样式
+        frame = tk.Frame(self.apology_dialog, bg='#FFF5E6',
+                        highlightbackground='#CD853F', highlightthickness=2)
+        frame.pack(fill='both', expand=True, padx=2, pady=2)
+
+        # 提示文字
+        label = tk.Label(frame, text="小铁皮在生气...说点什么？",
+                        bg='#FFF5E6', fg='#3E2723', font=('PingFang SC', 10))
+        label.pack(padx=10, pady=(10, 5))
+
+        # 输入框
+        self.apology_entry = tk.Entry(frame, width=20, font=('PingFang SC', 11))
+        self.apology_entry.pack(padx=10, pady=(0, 10))
+        self.apology_entry.bind('<Return>', self._on_apology_submit)
+        self.apology_entry.focus_set()
+
+        # 关闭按钮
+        close_btn = tk.Button(frame, text="×", command=self._close_apology_dialog,
+                             bg='#FFF5E6', fg='#999', font=('PingFang SC', 8),
+                             borderwidth=0, highlightthickness=0)
+        close_btn.place(x=2, y=2)
+
+    def _on_apology_submit(self, event=None) -> None:
+        """处理道歉输入"""
+        if not hasattr(self, 'apology_entry') or self.apology_entry is None:
+            return
+
+        text = self.apology_entry.get().strip()
+        if self.save_manager.check_apology(text):
+            # 道歉成功
+            self.bubble.say_random('apology_accepted')
+            self._close_apology_dialog()
+            # 和好时小跳一下
+            self.happy_timer = 30
+            if not self.jumping:
+                self.jumping = True
+                self.jump_vy = self.jump_velocity
+                self.jump_y = 0.0
+        else:
+            # 道歉不对
+            self.apology_entry.delete(0, tk.END)
+            self.bubble.say_random('apology_wrong')
+
+    def _close_apology_dialog(self) -> None:
+        """关闭道歉对话框"""
+        if self.apology_dialog:
+            self.apology_dialog.destroy()
+            self.apology_dialog = None
+            self.apology_entry = None
+
+    def _update_cold_war(self) -> None:
+        """更新冷战状态（每秒调用一次）"""
+        if not self.save_manager.is_in_cold_war():
+            return
+
+        # 冷战倒计时
+        calmed = self.save_manager.cold_war_tick()
+        if calmed:
+            self.bubble.say_random('calm_down')
+            self._close_apology_dialog()
+            # 和好时小跳一下
+            self.happy_timer = 30
+            if not self.jumping:
+                self.jumping = True
+                self.jump_vy = self.jump_velocity
+                self.jump_y = 0.0
+            return
+
+        # 冷战期间随机说话
+        now = time.time()
+        if now - self.last_cold_war_bubble > 10:  # 每10秒最多说一次
+            if random.random() < 0.1:  # 10% 概率
+                self.bubble.say_random('cold_war')
+                self.last_cold_war_bubble = now
+
+    def _feed_with_emotion(self) -> None:
+        """带情绪处理的喂食"""
+        if self.save_manager.is_in_cold_war():
+            success, msg_type = self.save_manager.feed_during_cold_war()
+            if success:
+                # 执行喂食动画
+                self.is_eating = True
+                self.eat_timer = self.eat_duration
+                self.eat_phase = 0
+                sounds.play('feed')
+
+                if msg_type == 'calm_down':
+                    self.bubble.say_random('calm_down')
+                    self._close_apology_dialog()
+                    self.happy_timer = 30
+                elif msg_type == 'reduce_cooldown':
+                    self.bubble.say_random('cold_war_feed')
+                elif msg_type == 'softened':
+                    self.bubble.say_random('cold_war_softened')
+                elif msg_type == 'still_angry':
+                    self.bubble.say_random('cold_war_feed_super')
+            return True
+        return False
 
     def _update_dizzy(self) -> None:
         """更新晕倒状态"""
@@ -1420,25 +1607,6 @@ class Pet:
             )
 
     # ========== 睡眠打扰系统 ==========
-
-    def _trigger_sleep_disturb(self) -> None:
-        count = self.save_manager.record_sleep_disturb()
-        self.save_manager.modify_stat('happiness', -10 if self.shake_count > 0 else 0)
-
-        if count == 1:
-            self.sleep_disturb_state = 'sleepy'
-            self.sleep_disturb_timer = 100
-            msgs = ["嗯...？干嘛呀...", "现在几点了... 💤", "好困...不要吵人家...", "唔...让我再睡会..."]
-        elif count == 2:
-            self.sleep_disturb_state = 'annoyed'
-            self.sleep_disturb_timer = 100
-            msgs = ["又来！都说了在睡觉！😤", "你自己不睡觉吗！", "小铁皮要罢工了... 😑"]
-        else:
-            self.sleep_disturb_state = 'super_annoyed'
-            self.sleep_disturb_timer = 100
-            msgs = ["我不想理你了！！😡", "明天起来你给我等着！", "再吵我就离家出走！"]
-
-        self.bubble.show(random.choice(msgs))
 
     def _update_sleep_disturb(self) -> None:
         if self.sleep_disturb_state and self.sleep_disturb_timer > 0:

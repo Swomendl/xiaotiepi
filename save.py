@@ -57,6 +57,19 @@ DEFAULT_DATA: Dict[str, Any] = {
         'last_dream': None,  # 'good', 'nightmare', 'none'
         'comforted_after_nightmare': False,
     },
+    # 情绪系统（生气维度）
+    'emotion': {
+        'anger_level': 0,                    # 0=不生气, 1=轻微生气, 2=生气, 3=超级不爽
+        'anger_cooldown': 0,                 # 冷战剩余时间（秒）
+        'anger_click_count': 0,              # 滑动窗口内点击次数
+        'anger_click_window_start': None,    # 点击计数窗口开始时间
+        'anger_shake_count': 0,              # 摇晃次数
+        'anger_last_shake_time': None,       # 上次摇晃时间
+        'night_disturb_count': 0,            # 今晚深夜打扰次数
+        'night_disturb_date': None,          # 记录是哪一晚
+        'cold_war_feed_count': 0,            # 冷战期间喂食次数
+        'emotion_state': 'normal',           # 最终显示的情绪状态
+    },
 }
 
 # 摸鱼检测阈值
@@ -76,6 +89,30 @@ MOOD_NIGHT_DISTURB_FIRST = -3   # 深夜第一次打扰
 MOOD_NIGHT_DISTURB_AFTER = -5   # 深夜后续打扰
 MOOD_COMFORT_AMOUNT = 15        # 安慰恢复量
 COMFORT_COOLDOWN = 1800         # 安慰冷却30分钟
+
+# 情绪系统常量
+ANGER_CLICK_WINDOW = 600        # 点击计数窗口（10分钟）
+ANGER_SHAKE_RESET_TIME = 30     # 摇晃计数重置时间（30秒）
+ANGER_CLICK_THRESHOLDS = {
+    1: 21,   # 21-35 次 → 轻微不满
+    2: 36,   # 36-50 次 → 生气
+    3: 51,   # 51+ 次 → 超级不爽
+}
+ANGER_SHAKE_THRESHOLDS = {
+    2: 4,    # 4 次 → 生气
+    3: 6,    # 6+ 次 → 超级不爽
+}
+COLD_WAR_DURATION = {
+    2: 30,   # 生气：30 秒冷战
+    3: 120,  # 超级不爽：2 分钟冷战
+}
+ANGER_HAPPINESS_PENALTY = {
+    1: -3,   # 轻微不满
+    2: -5,   # 生气
+    3: -15,  # 超级不爽
+}
+CALM_DOWN_HAPPINESS_BONUS = 5   # 和好后心情 +5
+APOLOGY_HAPPINESS_BONUS = 10    # 道歉后心情 +10
 
 # 信任度常量
 TRUST_DAILY_GOOD = 2            # 每日照顾好+2
@@ -859,3 +896,304 @@ class SaveManager:
         ds['comforted_after_nightmare'] = True
         self.data['daily_state'] = ds
         return True
+
+    # ========== 情绪系统（生气维度） ==========
+
+    def get_emotion_data(self) -> Dict:
+        """获取情绪数据"""
+        em = self.data.get('emotion', {})
+        # 确保所有字段存在
+        defaults = {
+            'anger_level': 0,
+            'anger_cooldown': 0,
+            'anger_click_count': 0,
+            'anger_click_window_start': None,
+            'anger_shake_count': 0,
+            'anger_last_shake_time': None,
+            'night_disturb_count': 0,
+            'night_disturb_date': None,
+            'cold_war_feed_count': 0,
+            'emotion_state': 'normal',
+        }
+        for key, default in defaults.items():
+            if key not in em:
+                em[key] = default
+        self.data['emotion'] = em
+        return em
+
+    def get_emotion_state(self) -> str:
+        """获取当前情绪状态"""
+        self._update_emotion_state()
+        em = self.get_emotion_data()
+        return em.get('emotion_state', 'normal')
+
+    def get_new_anger_level(self) -> int:
+        """获取新的生气等级（基于情绪系统）"""
+        em = self.get_emotion_data()
+        return em.get('anger_level', 0)
+
+    def _update_emotion_state(self) -> None:
+        """根据生气程度和心情值判定当前情绪状态"""
+        em = self.get_emotion_data()
+        anger = em.get('anger_level', 0)
+        happiness = self.data.get('happiness', 50)
+
+        # 生气优先级最高（因为这是针对用户的即时反应）
+        if anger >= 3:
+            em['emotion_state'] = 'super_annoyed'
+        elif anger >= 2:
+            em['emotion_state'] = 'angry'
+        elif anger >= 1:
+            em['emotion_state'] = 'annoyed'
+        # 然后看心情
+        elif happiness <= 15:
+            em['emotion_state'] = 'very_sad'
+        elif happiness <= 30:
+            em['emotion_state'] = 'sad'
+        elif happiness >= 70 and self._all_needs_satisfied():
+            em['emotion_state'] = 'happy'
+        else:
+            em['emotion_state'] = 'normal'
+
+        self.data['emotion'] = em
+
+    def _all_needs_satisfied(self) -> bool:
+        """检查所有需求是否满足"""
+        hunger = self.data.get('hunger', 0)
+        clean = self.data.get('cleanliness', 0)
+        return hunger > 70 and clean > 70
+
+    def add_anger_click(self) -> Optional[int]:
+        """增加生气点击计数，返回触发的生气等级（如果触发了的话）"""
+        # 只在工作时间触发
+        if not self.is_work_time():
+            return None
+
+        em = self.get_emotion_data()
+        now = time.time()
+        window_start = em.get('anger_click_window_start')
+
+        # 如果窗口不存在或超过 10 分钟，重置
+        if window_start is None or (now - window_start) > ANGER_CLICK_WINDOW:
+            em['anger_click_count'] = 1
+            em['anger_click_window_start'] = now
+        else:
+            em['anger_click_count'] += 1
+
+        self.data['emotion'] = em
+        clicks = em['anger_click_count']
+
+        # 检查是否触发生气
+        triggered_level = None
+        if clicks >= ANGER_CLICK_THRESHOLDS[3]:
+            triggered_level = 3
+        elif clicks >= ANGER_CLICK_THRESHOLDS[2]:
+            triggered_level = 2
+        elif clicks >= ANGER_CLICK_THRESHOLDS[1]:
+            triggered_level = 1
+
+        # 如果触发了更高等级的生气
+        current_level = em.get('anger_level', 0)
+        if triggered_level and triggered_level > current_level:
+            self._trigger_anger(triggered_level)
+            return triggered_level
+
+        return None
+
+    def add_anger_shake(self) -> Optional[int]:
+        """增加摇晃计数，返回触发的生气等级"""
+        em = self.get_emotion_data()
+        now = time.time()
+        last_shake = em.get('anger_last_shake_time')
+
+        # 超过 30 秒没摇晃，重置计数
+        if last_shake is None or (now - last_shake) > ANGER_SHAKE_RESET_TIME:
+            em['anger_shake_count'] = 1
+        else:
+            em['anger_shake_count'] += 1
+
+        em['anger_last_shake_time'] = now
+        self.data['emotion'] = em
+
+        shakes = em['anger_shake_count']
+        current_level = em.get('anger_level', 0)
+
+        # 检查是否触发生气
+        if shakes >= ANGER_SHAKE_THRESHOLDS[3] and current_level < 3:
+            self._trigger_anger(3)
+            return 3
+        elif shakes >= ANGER_SHAKE_THRESHOLDS[2] and current_level < 2:
+            self._trigger_anger(2)
+            return 2
+
+        return None
+
+    def handle_night_disturb(self) -> Optional[int]:
+        """处理深夜打扰，返回触发的生气等级"""
+        from datetime import datetime
+        now = datetime.now()
+        hour = now.hour
+        today = now.strftime('%Y-%m-%d')
+
+        # 检查是否是深夜
+        if not (hour >= 23 or hour < 6):
+            return None
+
+        em = self.get_emotion_data()
+
+        # 检查是否是新的一晚（重置计数）
+        if em.get('night_disturb_date') != today:
+            em['night_disturb_date'] = today
+            em['night_disturb_count'] = 0
+
+        em['night_disturb_count'] += 1
+        count = em['night_disturb_count']
+        self.data['emotion'] = em
+
+        # 根据打扰次数决定生气等级
+        if count == 1:
+            self._trigger_anger(1)
+            self.modify_stat('happiness', -3)
+            return 1
+        elif count == 2:
+            self._trigger_anger(2)
+            self.modify_stat('happiness', -5)
+            return 2
+        else:  # 3+ 次
+            self._trigger_anger(3)
+            self.modify_stat('happiness', -10)
+            return 3
+
+    def _trigger_anger(self, level: int) -> None:
+        """触发生气状态"""
+        em = self.get_emotion_data()
+        current_level = em.get('anger_level', 0)
+
+        # 只能升级，不能降级
+        if level <= current_level:
+            return
+
+        em['anger_level'] = level
+
+        # 设置冷战时间
+        if level >= 2:
+            em['anger_cooldown'] = COLD_WAR_DURATION.get(level, 30)
+            em['cold_war_feed_count'] = 0
+
+        # 重置计数
+        self._reset_anger_counts()
+
+        # 扣除心情
+        penalty = ANGER_HAPPINESS_PENALTY.get(level, 0)
+        self.modify_stat('happiness', penalty)
+
+        self.data['emotion'] = em
+        self._update_emotion_state()
+
+    def _reset_anger_counts(self) -> None:
+        """重置生气计数"""
+        em = self.get_emotion_data()
+        em['anger_click_count'] = 0
+        em['anger_click_window_start'] = None
+        em['anger_shake_count'] = 0
+        em['anger_last_shake_time'] = None
+        self.data['emotion'] = em
+
+    def cold_war_tick(self) -> bool:
+        """冷战倒计时（每秒调用），返回是否自动消气了"""
+        em = self.get_emotion_data()
+
+        if em.get('anger_cooldown', 0) <= 0:
+            return False
+
+        em['anger_cooldown'] -= 1
+        self.data['emotion'] = em
+
+        # 冷战期间每 60 秒心情 -2
+        if em['anger_cooldown'] % 60 == 0 and em['anger_cooldown'] > 0:
+            self.modify_stat('happiness', -2)
+
+        # 超级不爽不会自动解除，必须道歉
+        if em['anger_cooldown'] <= 0 and em.get('anger_level', 0) < 3:
+            self._calm_down()
+            return True
+
+        return False
+
+    def _calm_down(self) -> None:
+        """消气"""
+        em = self.get_emotion_data()
+        em['anger_level'] = 0
+        em['anger_cooldown'] = 0
+        em['cold_war_feed_count'] = 0
+        self._reset_anger_counts()
+        self.modify_stat('happiness', CALM_DOWN_HAPPINESS_BONUS)
+        self.data['emotion'] = em
+        self._update_emotion_state()
+
+    def feed_during_cold_war(self) -> Tuple[bool, str]:
+        """冷战期间喂食，返回 (是否成功, 消息类型)"""
+        em = self.get_emotion_data()
+        level = em.get('anger_level', 0)
+
+        if level == 0:
+            return False, ''
+
+        if level == 2:
+            # 普通生气：喂食减少 10 秒冷战时间
+            em['anger_cooldown'] = max(0, em.get('anger_cooldown', 0) - 10)
+            self.data['emotion'] = em
+            if em['anger_cooldown'] <= 0:
+                self._calm_down()
+                return True, 'calm_down'
+            return True, 'reduce_cooldown'
+        elif level == 3:
+            # 超级不爽：喂食不能直接解除，但可以让小铁皮态度软化一点
+            em['cold_war_feed_count'] = em.get('cold_war_feed_count', 0) + 1
+            self.data['emotion'] = em
+            if em['cold_war_feed_count'] >= 3:
+                return True, 'softened'
+            return True, 'still_angry'
+
+        return False, ''
+
+    def check_apology(self, user_input: str) -> bool:
+        """检查用户是否道歉"""
+        apology_words = ['对不起', '抱歉', '我错了', 'sorry', '对不起啦', '原谅我', '不好意思']
+
+        em = self.get_emotion_data()
+        if em.get('anger_level', 0) < 3:
+            return False
+
+        for word in apology_words:
+            if word in user_input.lower():
+                self._accept_apology()
+                return True
+
+        return False
+
+    def _accept_apology(self) -> None:
+        """接受道歉"""
+        em = self.get_emotion_data()
+        em['anger_level'] = 0
+        em['anger_cooldown'] = 0
+        em['cold_war_feed_count'] = 0
+        self._reset_anger_counts()
+        self.modify_stat('happiness', APOLOGY_HAPPINESS_BONUS)
+        self.data['emotion'] = em
+        self._update_emotion_state()
+
+    def is_in_cold_war(self) -> bool:
+        """是否在冷战中"""
+        em = self.get_emotion_data()
+        return em.get('anger_level', 0) >= 2
+
+    def get_cold_war_remaining(self) -> int:
+        """获取冷战剩余时间（秒）"""
+        em = self.get_emotion_data()
+        return em.get('anger_cooldown', 0)
+
+    def should_show_apology_dialog(self) -> bool:
+        """是否应该显示道歉对话框"""
+        em = self.get_emotion_data()
+        return em.get('anger_level', 0) >= 3
