@@ -72,7 +72,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/shuyunDENG/xiaotiepi.git
+git clone https://github.com/Swomendl/xiaotiepi.git
 cd xiaotiepi
 
 # 安装依赖

@@ -233,10 +233,12 @@ class Pet:
         self._tick()
         self._decay_loop()
         self._auto_save()
-        self._schedule_paper_fetch()
 
-        # 打招呼
-        self.root.after(800, lambda: self.bubble.say_random(self.save_manager.get_status()))
+        # 启动时执行每日流程（延迟1秒让窗口先显示）
+        self.root.after(1000, self._on_app_start)
+
+        # 启动跨天检测循环（每10分钟检查一次）
+        self._start_daily_check_loop()
 
     def _bind_events(self) -> None:
         """绑定鼠标事件"""
@@ -944,6 +946,16 @@ class Pet:
 
         if status == 'sleep':
             self._trigger_sleep_disturb()
+            return
+
+        # 噩梦后安慰（摸头）
+        if self.save_manager.comfort_after_nightmare():
+            self.bubble.show("谢谢摸摸...感觉好多了..🥺")
+            self.happy_timer = 40
+            if not self.jumping:
+                self.jumping = True
+                self.jump_vy = self.jump_velocity
+                self.jump_y = 0.0
             return
 
         if self.save_manager.check_morning_greeting():
@@ -1659,13 +1671,137 @@ class Pet:
                 y1 = base_y + r * ps // 2
                 self.canvas.create_rectangle(x1, y1, x1 + ps // 2, y1 + ps // 2, fill=color, outline=color)
 
-    # ========== 论文阅读系统 ==========
+    # ========== 每日流程系统 ==========
 
-    def _schedule_paper_fetch(self) -> None:
-        now = datetime.now()
-        if now.hour >= 6:
-            self._check_paper_fetch()
-        self.root.after(3600000, self._schedule_paper_fetch)
+    def _on_app_start(self) -> None:
+        """程序启动时的初始化流程"""
+        # 1. 检查是否跨天
+        is_new_day = self.save_manager.check_day_change()
+
+        # 2. 结算梦境（如果是新的一天）
+        dream_result = None
+        if is_new_day:
+            dream_result = self.save_manager.settle_dream()
+
+        # 3. 检查今日论文
+        if not self.save_manager.is_papers_fetched_today():
+            self._fetch_today_papers_on_startup()
+        else:
+            # 加载已有的论文
+            self._load_existing_papers()
+
+        # 4. 显示问候（如果还没打过招呼）
+        if not self.save_manager.is_greeted_today():
+            self._show_morning_greeting(dream_result)
+        else:
+            # 已经打过招呼，显示普通状态
+            self.bubble.say_random(self.save_manager.get_status())
+
+    def _start_daily_check_loop(self) -> None:
+        """启动跨天检测循环（处理程序持续运行时的跨天）"""
+
+        def check_new_day():
+            is_new_day = self.save_manager.check_day_change()
+
+            if is_new_day:
+                print(f"检测到新的一天，执行每日流程...")
+
+                # 结算梦境
+                dream_result = self.save_manager.settle_dream()
+
+                # 抓取今日论文
+                if not self.save_manager.is_papers_fetched_today():
+                    self._fetch_today_papers_on_startup()
+
+                # 显示早安问候
+                if not self.save_manager.is_greeted_today():
+                    self._show_morning_greeting(dream_result)
+
+            # 每10分钟检查一次
+            self.root.after(10 * 60 * 1000, check_new_day)
+
+        # 延迟启动，避免和 _on_app_start 冲突
+        self.root.after(15 * 60 * 1000, check_new_day)
+
+    def _fetch_today_papers_on_startup(self) -> None:
+        """启动时抓取论文（静默模式，不显示阅读动画）"""
+        if self.paper_fetching:
+            return
+
+        try:
+            from paper_agent.fetcher import PaperFetcher
+            fetcher = PaperFetcher()
+
+            # 检查是否需要抓取
+            if fetcher.should_fetch_today():
+                self._start_paper_fetch()
+            else:
+                # 加载已有论文
+                self.today_papers = fetcher.load_today_papers()
+                if self.today_papers:
+                    self.save_manager.mark_papers_fetched()
+                    self.paper_briefing_ready = True
+        except Exception as e:
+            print(f"启动时论文检查失败: {e}")
+
+    def _load_existing_papers(self) -> None:
+        """加载已有的今日论文"""
+        try:
+            from paper_agent.fetcher import PaperFetcher
+            fetcher = PaperFetcher()
+            self.today_papers = fetcher.load_today_papers()
+            if self.today_papers:
+                self.paper_briefing_ready = True
+        except Exception as e:
+            print(f"加载论文失败: {e}")
+
+    def _show_morning_greeting(self, dream_result: str = None) -> None:
+        """显示早安问候"""
+        import random
+
+        # 根据梦境选择问候语
+        if dream_result == 'good':
+            greetings = [
+                "早上好！昨晚做了个好梦，今天精神特别好~",
+                "早安！梦到发了一篇 Nature，醒来心情超好！",
+                "早上好！昨晚梦里读了好多论文，好充实~",
+            ]
+        elif dream_result == 'nightmare':
+            greetings = [
+                "早上好...昨晚做噩梦了，需要你摸摸头..😢",
+                "噩梦...梦到 reviewer 要求 major revision...",
+                "昨晚没睡好...梦到代码全是 bug...😿",
+            ]
+        else:
+            # 无梦时，根据论文情况选择
+            high_score_papers = [p for p in self.today_papers if p.get('interest_score', 0) >= 4]
+            paper_count = len(self.today_papers)
+
+            if high_score_papers:
+                greetings = [
+                    "早上好！今天有篇论文我觉得超棒，快来看！",
+                    "早安！发现了一篇很厉害的论文！✨",
+                ]
+            elif paper_count > 0:
+                greetings = [
+                    f"早上好！今天找到了 {paper_count} 篇新论文~",
+                    f"早安！{paper_count} 篇新鲜论文等你翻牌！📰",
+                ]
+            else:
+                greetings = [
+                    "早上好！来看看今天有什么新论文~",
+                    "早安！新的一天，新的论文！",
+                    "早上好！今天也要元气满满地读论文！",
+                ]
+
+        greeting = random.choice(greetings)
+        self.bubble.show(greeting, duration=6000)
+
+        # 标记已打招呼
+        self.save_manager.mark_greeted()
+        self.save_manager.save()
+
+    # ========== 论文阅读系统 ==========
 
     def _check_paper_fetch(self) -> None:
         if self.paper_fetching:
@@ -1771,6 +1907,10 @@ class Pet:
         self.paper_fetching = False
         self.push_glasses_timer = 30
         self.paper_briefing_ready = True
+
+        # 标记今天已抓取论文
+        self.save_manager.mark_papers_fetched()
+        self.save_manager.save()
 
         # 检查是否有高分论文
         high_score_papers = [p for p in self.today_papers if p.get('interest_score', 0) >= 4]

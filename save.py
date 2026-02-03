@@ -48,6 +48,15 @@ DEFAULT_DATA: Dict[str, Any] = {
         'had_bad_sleep': False,
         'pre_sleep_mood': 70,
     },
+    # 每日状态（跨天检测用）
+    'daily_state': {
+        'last_active_date': None,
+        'greeted_today': False,
+        'papers_fetched_today': False,
+        'dream_settled_today': False,
+        'last_dream': None,  # 'good', 'nightmare', 'none'
+        'comforted_after_nightmare': False,
+    },
 }
 
 # 摸鱼检测阈值
@@ -726,3 +735,127 @@ class SaveManager:
         sd = self.data.get('sleep_data', {})
         sd['had_bad_sleep'] = False
         self.data['sleep_data'] = sd
+
+    # ========== 每日状态管理（跨天检测） ==========
+
+    def get_daily_state(self) -> Dict:
+        """获取每日状态"""
+        ds = self.data.get('daily_state', {})
+        # 确保所有字段存在
+        defaults = {
+            'last_active_date': None,
+            'greeted_today': False,
+            'papers_fetched_today': False,
+            'dream_settled_today': False,
+            'last_dream': None,
+            'comforted_after_nightmare': False,
+        }
+        for key, default in defaults.items():
+            if key not in ds:
+                ds[key] = default
+        self.data['daily_state'] = ds
+        return ds
+
+    def check_day_change(self) -> bool:
+        """检查是否跨天了，返回 True 表示是新的一天"""
+        from datetime import datetime
+        today = datetime.now().strftime('%Y-%m-%d')
+        ds = self.get_daily_state()
+        last_active = ds.get('last_active_date')
+
+        if last_active != today:
+            # 新的一天！重置每日状态
+            ds['last_active_date'] = today
+            ds['greeted_today'] = False
+            ds['papers_fetched_today'] = False
+            ds['dream_settled_today'] = False
+            ds['comforted_after_nightmare'] = False
+            self.data['daily_state'] = ds
+            self.save()
+            return True
+        return False
+
+    def is_papers_fetched_today(self) -> bool:
+        """今天是否已抓取论文"""
+        ds = self.get_daily_state()
+        return ds.get('papers_fetched_today', False)
+
+    def mark_papers_fetched(self) -> None:
+        """标记今天已抓取论文"""
+        ds = self.get_daily_state()
+        ds['papers_fetched_today'] = True
+        self.data['daily_state'] = ds
+
+    def is_greeted_today(self) -> bool:
+        """今天是否已打过招呼"""
+        ds = self.get_daily_state()
+        return ds.get('greeted_today', False)
+
+    def mark_greeted(self) -> None:
+        """标记今天已打招呼"""
+        ds = self.get_daily_state()
+        ds['greeted_today'] = True
+        self.data['daily_state'] = ds
+
+    def settle_dream(self) -> Optional[str]:
+        """结算梦境，返回梦境类型 ('good', 'nightmare', 'none')"""
+        ds = self.get_daily_state()
+
+        # 今天已结算过，返回上次结果
+        if ds.get('dream_settled_today'):
+            return ds.get('last_dream')
+
+        # 首次运行没有历史记录，跳过梦境结算
+        if ds.get('last_active_date') is None:
+            return None
+
+        # 生成梦境
+        dream = self._generate_dream()
+
+        # 应用心情影响
+        if dream == 'good':
+            self.modify_stat('happiness', 10)
+        elif dream == 'nightmare':
+            self.modify_stat('happiness', -8)
+
+        # 记录
+        ds['last_dream'] = dream
+        ds['dream_settled_today'] = True
+        self.data['daily_state'] = ds
+        self.save()
+
+        return dream
+
+    def _generate_dream(self) -> str:
+        """根据睡前心情生成梦境"""
+        sd = self.data.get('sleep_data', {})
+        pre_sleep_mood = sd.get('pre_sleep_mood', 50)
+
+        # 根据心情调整概率
+        if pre_sleep_mood >= 70:
+            weights = [0.50, 0.40, 0.10]  # 美梦概率高
+        elif pre_sleep_mood <= 30:
+            weights = [0.15, 0.50, 0.35]  # 噩梦概率高
+        else:
+            weights = [0.30, 0.50, 0.20]  # 正常概率
+
+        dreams = ['good', 'none', 'nightmare']
+        return random.choices(dreams, weights=weights)[0]
+
+    def get_last_dream(self) -> Optional[str]:
+        """获取最近一次梦境"""
+        ds = self.get_daily_state()
+        return ds.get('last_dream')
+
+    def comfort_after_nightmare(self) -> bool:
+        """噩梦后安慰，返回是否成功"""
+        ds = self.get_daily_state()
+        if ds.get('last_dream') != 'nightmare':
+            return False
+        if ds.get('comforted_after_nightmare'):
+            return False
+
+        self.modify_stat('happiness', 5)
+        ds['comforted_after_nightmare'] = True
+        self.data['daily_state'] = ds
+        return True
