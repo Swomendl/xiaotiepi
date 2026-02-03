@@ -188,7 +188,8 @@ class Pet:
         self.happy_event_timer = 0
         self.happy_event_pos = [0, 0]
         self.happy_event_phase = 0.0
-        self.last_happy_event_check = time.time()
+        # 设置为过去的时间，让启动后 5 分钟就可以触发第一次检查
+        self.last_happy_event_check = time.time() - 600
 
         # 论文阅读系统
         self.is_reading_papers = False
@@ -1595,12 +1596,14 @@ class Pet:
             return
 
         now = time.time()
-        if now - self.last_happy_event_check < 1800:
+        # 每 15 分钟检查一次（原来是 30 分钟）
+        if now - self.last_happy_event_check < 900:
             return
 
         self.last_happy_event_check = now
 
-        if random.random() < 0.15:
+        # 20% 概率触发（原来是 15%）
+        if random.random() < 0.20:
             self._start_happy_event()
 
     def _start_happy_event(self) -> None:
