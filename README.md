@@ -53,7 +53,8 @@
 ## 演示
 小铁皮精灵图预览：
 
-![Uploading 截屏2026-02-03 19.23.32.png…]()
+<img width="599" height="646" alt="截屏2026-02-03 19 23 32" src="https://github.com/user-attachments/assets/72a402fe-9b5a-41ec-a327-cfb978cc69e5" />
+
 
 日常展示：
 
