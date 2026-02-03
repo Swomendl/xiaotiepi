@@ -1,4 +1,9 @@
-# 小铁皮 
+# 🤖 小铁皮 
+
+![Python](https://img.shields.io/badge/Python-3.8+-blue?logo=python&logoColor=white)
+![Platform](https://img.shields.io/badge/Platform-macOS-lightgrey?logo=apple)
+![License](https://img.shields.io/badge/License-MIT-green)
+![Claude API](https://img.shields.io/badge/AI-Claude%20API-orange)
 
 > 一只会读论文的胖像素宠物
 
