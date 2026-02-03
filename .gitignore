@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+*.spec
+
+# 环境
+.env
+venv/
+.venv/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# API key
+*.key
+
+# 临时文件
+*.tmp
+*.log
+
+# Claude Code
+.claude/
+
+# 任务说明文件（不需要提交）
+xiaotiepi_git_package.md
+git_READEME.md
