@@ -1,4 +1,4 @@
-# 小铁皮 (xiaotiepi)
+# 小铁皮 
 
 > 一只会读论文的胖像素宠物
 
@@ -47,10 +47,13 @@
 
 ## 演示
 日常展示：
+
 ![ezgif-252225f608cc759f](https://github.com/user-attachments/assets/7b4f54b6-78df-4bb6-86a1-4080a02e06ac)
 
 论文功能展示：
-![Uploading 论文部分.gif…]()
+
+![论文部分](https://github.com/user-attachments/assets/d698df8b-db06-4f2d-8b93-f754fca1263a)
+
 
 
 ## 安装
