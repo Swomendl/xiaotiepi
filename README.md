@@ -51,6 +51,10 @@
 | 气泡通知 | 它会主动冒泡告诉你有好论文 |
 
 ## 演示
+小铁皮精灵图预览：
+
+![Uploading 截屏2026-02-03 19.23.32.png…]()
+
 日常展示：
 
 ![ezgif-252225f608cc759f](https://github.com/user-attachments/assets/7b4f54b6-78df-4bb6-86a1-4080a02e06ac)
