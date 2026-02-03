@@ -47,25 +47,10 @@
 | 体型变化 | 喂太多会变胖，饿着会变瘦 |
 | 气泡通知 | 它会主动冒泡告诉你有好论文 |
 
-## 📸 截图
+## 演示
 
-<p align="center">
-  <img src="screenshots/daily_report.png" alt="学术日报" width="400">
-  <br>
-  <em>学术日报 - 每天的论文都整理好了</em>
-</p>
+![ezgif-252225f608cc759f](https://github.com/user-attachments/assets/7b4f54b6-78df-4bb6-86a1-4080a02e06ac)
 
-<p align="center">
-  <img src="screenshots/chat.png" alt="论文讨论" width="400">
-  <br>
-  <em>和小铁皮讨论论文</em>
-</p>
-
-<p align="center">
-  <img src="screenshots/notebook.png" alt="笔记本" width="400">
-  <br>
-  <em>讨论完自动生成笔记</em>
-</p>
 
 ## 安装
 
