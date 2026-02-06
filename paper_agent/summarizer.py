@@ -14,16 +14,41 @@ from .api_key_manager import get_api_key
 
 class PaperSummarizer:
     def __init__(self):
+        # 调试日志
+        from pathlib import Path
+        log_file = Path.home() / '.xiaotiepi' / 'debug.log'
+        def log(msg):
+            try:
+                with open(log_file, 'a') as f:
+                    f.write(f"[summarizer] {msg}\n")
+            except:
+                pass
+
         self.api_key = get_api_key()
+        log(f"api_key found: {bool(self.api_key)}")
+
         self.client = None
         if self.api_key:
             try:
+                log("step 1: importing anthropic...")
                 import anthropic
+                log(f"step 2: anthropic imported, version: {anthropic.__version__}")
+            except BaseException as e:
+                import traceback
+                log(f"IMPORT FAILED: {type(e).__name__}: {e}")
+                log(traceback.format_exc())
+                return
+
+            try:
+                log("step 3: creating Anthropic client...")
                 self.client = anthropic.Anthropic(api_key=self.api_key)
-            except ImportError:
-                print("anthropic package not installed")
-            except Exception as e:
-                print(f"Failed to init Anthropic client: {e}")
+                log("step 4: client created OK")
+            except BaseException as e:
+                import traceback
+                log(f"CLIENT FAILED: {type(e).__name__}: {e}")
+                log(traceback.format_exc())
+        else:
+            log("no api_key, skipping client creation")
 
     def _get_taste_addon(self) -> str:
         if not TASTE_PROFILE_FILE.exists():

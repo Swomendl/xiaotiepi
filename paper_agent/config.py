@@ -18,7 +18,7 @@ MAX_DEEP_READ = 2
 TASTE_DECAY_RATE = 0.9
 EVOLVED_KEYWORD_THRESHOLD = 10
 
-ARXIV_API_URL = "http://export.arxiv.org/api/query"
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
 BIORXIV_API_URL = "https://api.biorxiv.org/details/biorxiv"
 ARXIV_CATEGORIES = ["q-bio.BM", "q-bio.QM", "cs.LG", "stat.ML"]
 REQUEST_DELAY = 3

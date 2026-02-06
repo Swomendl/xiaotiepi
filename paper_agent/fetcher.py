@@ -50,15 +50,10 @@ class PaperFetcher:
         return priority, total_hits
 
     def fetch_arxiv(self, max_results: int = 50) -> List[Dict]:
+        # 注意：arXiv API 要求 +OR+ 不能被 URL 编码，所以手动构建 URL
         categories = '+OR+'.join([f'cat:{cat}' for cat in ARXIV_CATEGORIES])
-        params = {
-            'search_query': categories,
-            'sortBy': 'submittedDate',
-            'sortOrder': 'descending',
-            'max_results': str(max_results)
-        }
-
-        url = f"{ARXIV_API_URL}?{urllib.parse.urlencode(params)}"
+        url = (f"{ARXIV_API_URL}?search_query={categories}"
+               f"&sortBy=submittedDate&sortOrder=descending&max_results={max_results}")
 
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'xiaotiepi-paper-agent/1.0'})
