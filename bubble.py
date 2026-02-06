@@ -273,9 +273,15 @@ class Bubble:
         self.window: Optional[tk.Toplevel] = None
         self.hide_job: Optional[str] = None
         self.label: Optional[tk.Label] = None
+        self.on_click: Optional[Callable] = None  # 点击回调
+        self.clickable: bool = False  # 是否可点击
 
-    def show(self, text: str, duration: int = 3000) -> None:
+    def show(self, text: str, duration: int = 3000, clickable: bool = False,
+             on_click: Callable = None) -> None:
         self.hide()
+
+        self.clickable = clickable
+        self.on_click = on_click
 
         self.window = tk.Toplevel(self.parent)
         self.window.overrideredirect(True)
@@ -303,7 +309,8 @@ class Bubble:
                           highlightthickness=0, bg=bg_color)
         canvas.pack()
 
-        border_color = '#D4856A'
+        # 可点击时边框变橙色
+        border_color = '#FF9F43' if clickable else '#D4856A'
         fill_color = '#FFF5EE'
 
         for i in range(ps, canvas_w - ps, ps):
@@ -330,8 +337,21 @@ class Bubble:
                              bg=fill_color, fg='#333333', wraplength=150, justify='left')
         canvas.create_window(canvas_w // 2, (text_h + ps * 4) // 2, window=self.label)
 
+        # 可点击时添加点击事件和手型光标
+        if clickable and on_click:
+            canvas.config(cursor='hand2')
+            canvas.bind('<Button-1>', self._handle_click)
+            self.label.config(cursor='hand2')
+            self.label.bind('<Button-1>', self._handle_click)
+
         self._update_position()
         self.hide_job = self.parent.after(duration, self.hide)
+
+    def _handle_click(self, event=None) -> None:
+        """处理点击事件"""
+        if self.clickable and self.on_click:
+            self.hide()
+            self.on_click()
 
     def _update_position(self) -> None:
         """更新气泡位置（在宠物上方）"""

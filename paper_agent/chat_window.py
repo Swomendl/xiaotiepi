@@ -213,10 +213,12 @@ CARD_WIDTH = 380
 class PaperChatWindow:
     """学术日报聊天窗口"""
 
-    def __init__(self, parent: tk.Tk, papers: List[Dict], on_close: Callable = None):
+    def __init__(self, parent: tk.Tk, papers: List[Dict], on_close: Callable = None,
+                 save_manager=None):
         self.parent = parent
         self.papers = papers
         self.on_close = on_close
+        self.save_manager = save_manager  # 用于增加亲密度
         self.summarizer = PaperSummarizer()
         self.taste_profile = TasteProfile()
         self.bookmark_manager = BookmarkManager()
@@ -732,6 +734,11 @@ class PaperChatWindow:
         self.today_feedback[paper_id] = 'up'
         self._save_history()
 
+        # 增加亲密度
+        if self.save_manager:
+            self.save_manager.add_trust(0.25, 'paper')
+            self.save_manager.save()
+
         # 更新UI
         up_btn.config(fg=COLORS['thumbs_up'], cursor='arrow')
         down_btn.config(fg=COLORS['btn_disabled'], cursor='arrow')
@@ -1163,6 +1170,10 @@ class PaperChatWindow:
             self.bookmark_manager.add(paper)
             btn.config(text='★', fg=COLORS['star'])
             self._show_toast("已收藏~ ⭐")
+            # 收藏时增加亲密度
+            if self.save_manager:
+                self.save_manager.add_trust(0.25, 'paper')
+                self.save_manager.save()
 
     def _toggle_bookmarks(self):
         """切换收藏列表视图"""
