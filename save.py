@@ -31,10 +31,28 @@ DEFAULT_DATA: Dict[str, Any] = {
     'created_at': None,
     'hunger_history': [],
     'body_type': 'normal',
-    # 信任度系统
-    'trust': 50,
-    'trust_streak': 0,
+    # 亲密度系统（重构版）
+    'trust': 5,                           # 亲密度 0-100，初始 5（从"陌生"阶段开始）
+    'trust_streak': 0,                    # 连续照顾天数
     'last_trust_check_date': None,
+    'trust_daily_gains': {                # 今日各途径获得的亲密度
+        'chat': 0,                        # 闲聊获得（上限 2.5）
+        'feed': 0,                        # 喂食获得（上限 0.75）
+        'clean': 0,                       # 清洁获得（上限 0.5）
+        'paper': 0,                       # 论文互动获得（上限 0.75）
+    },
+    'trust_daily_date': None,             # 记录是哪一天（用于重置）
+    'last_interaction_time': None,        # 上次任何互动的时间
+    'trust_penalties': {                  # 今日惩罚记录
+        'hunger_warned': False,           # 今天是否已因饥饿扣过
+        'dirty_warned': False,            # 今天是否已因脏扣过
+        'anger_count_today': 0,           # 今天生气次数
+        'super_angry_penalized': False,   # 本次超级不爽是否已扣
+    },
+    'trust_penalty_date': None,           # 惩罚记录日期（用于每日重置）
+    # 闲聊系统
+    'casual_chat_count_today': 0,         # 今日闲聊次数
+    'casual_chat_date': None,             # 闲聊记录日期（用于每日重置）
     # 心情历史
     'mood_history': {
         'last_full_service_hour': None,
@@ -70,11 +88,80 @@ DEFAULT_DATA: Dict[str, Any] = {
         'cold_war_feed_count': 0,            # 冷战期间喂食次数
         'emotion_state': 'normal',           # 最终显示的情绪状态
     },
+    # 成长系统
+    'growth_data': {
+        'total_exp': 0,
+        'level': 1,
+    },
+    # 行为统计
+    'behavior_stats': {
+        # 基础互动
+        'feed_count': 0,
+        'clean_count': 0,
+        'play_count': 0,
+        'pet_count': 0,
+        'comfort_count': 0,
+        # 论文相关
+        'paper_reads': 0,
+        'paper_likes': 0,
+        'paper_bookmarks': 0,
+        # 社交相关
+        'chat_count': 0,
+        'chat_messages': 0,
+        # 负面事件
+        'anger_triggered': 0,
+        'disturb_sleep': 0,
+        'neglect_days': 0,
+        'death_count': 0,
+        # 时间相关
+        'total_alive_days': 0,
+        'consecutive_care': 0,
+        'consecutive_care_max': 0,
+        'night_interactions': 0,
+    },
+    # 道具系统
+    'inventory': {
+        'owned_items': ['hat_adventure', 'hat_bow', 'hat_sleep',
+                       'glasses_round', 'scarf_red'],
+        'equipped': {
+            'head': None,
+            'face': None,
+            'neck': None,
+            'hand': None,
+            'effect': None,
+        },
+    },
 }
 
 # 摸鱼检测阈值
 FISHING_THRESHOLD = 20      # 每小时点击超过20次判定为摸鱼
 LONELY_HOURS_BASE = 3       # 基础寂寞阈值（信任度会延长）
+
+# 经验值获取表
+EXP_REWARDS = {
+    'feed': 10,
+    'clean': 10,
+    'play': 15,
+    'pet': 2,
+    'comfort': 20,
+    'chat': 15,
+    'chat_message': 3,
+    'paper_read': 20,
+    'paper_like': 5,
+    'paper_bookmark': 10,
+    'daily_healthy': 30,
+    'consecutive_3': 50,
+    'consecutive_7': 100,
+}
+
+# 等级阶段
+LEVEL_STAGES = {
+    (1, 5): {'stage': '幼年期', 'title': '小萌新', 'color': '#90EE90'},
+    (6, 15): {'stage': '成长期', 'title': '小伙伴', 'color': '#87CEEB'},
+    (16, 30): {'stage': '成熟期', 'title': '好朋友', 'color': '#DDA0DD'},
+    (31, 50): {'stage': '巅峰期', 'title': '挚友', 'color': '#FFD700'},
+    (51, 999): {'stage': '传说期', 'title': '灵魂伴侣', 'color': '#FF69B4'},
+}
 
 # 心情相关常量
 MOOD_CLICK_BONUS = (1, 2)       # 点击心情增益范围
@@ -103,6 +190,7 @@ ANGER_SHAKE_THRESHOLDS = {
     3: 6,    # 6+ 次 → 超级不爽
 }
 COLD_WAR_DURATION = {
+    1: 10,   # 轻微不满：10 秒后自动消气
     2: 30,   # 生气：30 秒冷战
     3: 120,  # 超级不爽：2 分钟冷战
 }
@@ -114,7 +202,42 @@ ANGER_HAPPINESS_PENALTY = {
 CALM_DOWN_HAPPINESS_BONUS = 5   # 和好后心情 +5
 APOLOGY_HAPPINESS_BONUS = 10    # 道歉后心情 +10
 
-# 信任度常量
+# 亲密度常量（重构版）
+TRUST_GAIN = {
+    'chat': 0.5,                # 闲聊 +0.5
+    'feed': 0.25,               # 喂食 +0.25
+    'clean': 0.25,              # 清洁 +0.25
+    'paper': 0.25,              # 论文互动 +0.25
+    'streak': 1.0,              # 连续照顾 ≥3 天额外 +1
+}
+TRUST_DAILY_LIMIT = {
+    'chat': 2.5,                # 闲聊每日上限 2.5（5 次）
+    'feed': 0.75,               # 喂食每日上限 0.75（3 次）
+    'clean': 0.5,               # 清洁每日上限 0.5（2 次）
+    'paper': 0.75,              # 论文每日上限 0.75（3 次）
+}
+# 亲密度惩罚
+TRUST_PENALTY = {
+    'hunger_warning': -0.5,     # 饥饿不管（< 30 持续 30 分钟）
+    'hunger_critical': -2,      # 饿到极限（< 15）
+    'dirty_warning': -0.5,      # 脏了不管（< 30 持续 30 分钟）
+    'anger_repeat': -0.5,       # 当天第 2+ 次生气
+    'super_angry': -3,          # 达到超级不爽
+    'cold_war_timeout': -3,     # 冷战超时没道歉
+    'happiness_crash': -2,      # 心情崩溃（< 15）
+    'neglect': -1,              # 超过 24 小时没互动
+    'death': -20,               # 死亡
+}
+# 亲密度等级
+TRUST_LEVELS = {
+    (0, 19): ('陌生', '警惕中...'),
+    (20, 39): ('认识', '有点信任你了'),
+    (40, 59): ('朋友', '你还不错嘛'),
+    (60, 79): ('好友', '最喜欢你了！'),
+    (80, 99): ('挚友', '绝对信任！'),
+    (100, 100): ('满级', '灵魂伴侣！'),
+}
+# 旧常量（保留兼容）
 TRUST_DAILY_GOOD = 2            # 每日照顾好+2
 TRUST_STREAK_3_BONUS = 3        # 连续3天+3
 TRUST_STREAK_7_BONUS = 5        # 连续7天+5
@@ -274,7 +397,8 @@ class SaveManager:
         else:
             self.data['sick_since'] = None
 
-    def feed(self) -> Tuple[bool, bool]:
+    def feed(self) -> Tuple[bool, bool, bool, Optional[int]]:
+        """喂食，返回 (是否喂饱奖励, 是否全套服务, 是否获得亲密度, 升级后的等级)"""
         amount = RESTORE_AMOUNTS['feed'] * self.get_mood_multiplier()
         self.modify_stat('hunger', amount)
         self.modify_stat('vitality', VITALITY_BOOST['feed'])
@@ -286,9 +410,18 @@ class SaveManager:
             full_bonus = True
 
         full_service = self.record_service('feed')
-        return full_bonus, full_service
 
-    def bath(self) -> Tuple[bool, bool]:
+        # 增加亲密度
+        trust_gained = self.add_trust(TRUST_GAIN['feed'], 'feed')
+
+        # 行为统计和经验值
+        self.increment_behavior_stat('feed_count')
+        new_level = self.add_experience(EXP_REWARDS['feed'], 'feed')
+
+        return full_bonus, full_service, trust_gained, new_level
+
+    def bath(self) -> Tuple[bool, bool, bool, Optional[int]]:
+        """洗澡，返回 (是否洗净奖励, 是否全套服务, 是否获得亲密度, 升级后的等级)"""
         self.modify_stat('cleanliness', RESTORE_AMOUNTS['bath'])
         self.modify_stat('vitality', VITALITY_BOOST['bath'])
         self.record_interaction()
@@ -299,14 +432,29 @@ class SaveManager:
             clean_bonus = True
 
         full_service = self.record_service('bath')
-        return clean_bonus, full_service
 
-    def play(self) -> bool:
+        # 增加亲密度
+        trust_gained = self.add_trust(TRUST_GAIN['clean'], 'clean')
+
+        # 行为统计和经验值
+        self.increment_behavior_stat('clean_count')
+        new_level = self.add_experience(EXP_REWARDS['clean'], 'clean')
+
+        return clean_bonus, full_service, trust_gained, new_level
+
+    def play(self) -> Tuple[bool, Optional[int]]:
+        """玩耍，返回 (是否全套服务, 升级后的等级)"""
         amount = RESTORE_AMOUNTS['play'] * self.get_mood_multiplier()
         self.modify_stat('happiness', amount)
         self.modify_stat('vitality', VITALITY_BOOST['play'])
         self.record_interaction()
-        return self.record_service('play')
+        full_service = self.record_service('play')
+
+        # 行为统计和经验值
+        self.increment_behavior_stat('play_count')
+        new_level = self.add_experience(EXP_REWARDS['play'], 'play')
+
+        return full_service, new_level
 
     def revive(self) -> None:
         """复活（数值重置为50）"""
@@ -361,7 +509,14 @@ class SaveManager:
         if hour >= 23 or hour < 6:
             return 'sleep'
 
-        # 摸鱼检测（优先级高于其他状态）
+        # 新情绪系统的生气状态（优先级最高）
+        emotion_anger = self.get_new_anger_level()
+        if emotion_anger >= 2:
+            return 'angry'
+        elif emotion_anger >= 1:
+            return 'annoyed'
+
+        # 摸鱼检测（工作时间点太多次）
         if self.is_fishing():
             return 'angry'
 
@@ -383,8 +538,8 @@ class SaveManager:
 
         return 'idle'
 
-    def record_click(self) -> None:
-        """记录一次点击"""
+    def record_click(self) -> Optional[int]:
+        """记录一次点击，返回升级后的等级（如果升级了的话）"""
         from datetime import datetime
         now = time.time()
 
@@ -404,6 +559,17 @@ class SaveManager:
         self.modify_stat('vitality', VITALITY_BOOST['click'])
         mood_bonus = random.randint(MOOD_CLICK_BONUS[0], MOOD_CLICK_BONUS[1])
         self.apply_mood_gain(mood_bonus)
+
+        # 行为统计和经验值
+        self.increment_behavior_stat('pet_count')
+        new_level = self.add_experience(EXP_REWARDS['pet'], 'pet')
+
+        # 检查是否深夜互动
+        hour = datetime.now().hour
+        if hour >= 23 or hour < 6:
+            self.increment_behavior_stat('night_interactions')
+
+        return new_level
 
     def record_interaction(self) -> None:
         """记录一次互动（喂食/洗澡/玩耍/点击）"""
@@ -492,8 +658,28 @@ class SaveManager:
             lonely_status = "😊 刚刚互动过"
 
         trust = int(self.get_trust())
-        trust_desc = self.get_trust_description()
+        trust_level, trust_desc = self.get_trust_level()
         streak = self.data.get('trust_streak', 0)
+
+        # 今日亲密度获取情况
+        gains = self.data.get('trust_daily_gains', {})
+        today_gain = sum(gains.values())
+
+        # 情绪状态
+        anger_level = self.get_new_anger_level()
+        anger_cooldown = self.get_cold_war_remaining()
+        if anger_level == 0:
+            emotion_status = "😊 心情不错"
+        elif anger_level == 1:
+            emotion_status = f"😐 有点不满 ({anger_cooldown}秒)"
+        elif anger_level == 2:
+            emotion_status = f"😠 生气中 ({anger_cooldown}秒冷战)"
+        else:
+            emotion_status = f"😡 超级不爽！(需要道歉)"
+
+        # 今日闲聊次数
+        chat_limit = self.get_casual_chat_limit()
+        chat_remaining = self.get_casual_chat_remaining()
 
         return (
             f"饥饿值: {int(self.data.get('hunger', 0))}/100\n"
@@ -501,8 +687,12 @@ class SaveManager:
             f"心情值: {int(self.data.get('happiness', 0))}/100\n"
             f"活力值: {vitality}/100 ({vitality_desc})\n"
             f"───────────\n"
-            f"信任度: {trust}/100 ({trust_desc})\n"
-            f"连续照顾: {streak}天\n"
+            f"情绪: {emotion_status}\n"
+            f"───────────\n"
+            f"亲密度: {trust}/100 【{trust_level}】\n"
+            f"  └ {trust_desc}\n"
+            f"  └ 今日+{today_gain:.1f} | 连续{streak}天\n"
+            f"闲聊: {chat_remaining}/{chat_limit}次\n"
             f"───────────\n"
             f"点击频率: {fishing_status}\n"
             f"互动状态: {lonely_status}\n"
@@ -539,30 +729,249 @@ class SaveManager:
     def get_body_type(self) -> str:
         return self.data.get('body_type', 'normal')
 
-    # ========== 信任度系统 ==========
+    # ========== 亲密度系统（重构版） ==========
 
     def get_trust(self) -> float:
-        return self.data.get('trust', 50)
+        return self.data.get('trust', 30)
 
     def get_trust_bonus(self) -> float:
         return self.get_trust() / 100.0
 
     def modify_trust(self, delta: float) -> None:
-        current = self.data.get('trust', 50)
+        current = self.data.get('trust', 30)
         self.data['trust'] = max(0, min(100, current + delta))
 
+    def get_trust_level(self) -> Tuple[str, str]:
+        """获取亲密度等级名称和描述"""
+        trust = int(self.get_trust())
+        for (low, high), (name, desc) in TRUST_LEVELS.items():
+            if low <= trust <= high:
+                return name, desc
+        return '陌生', '警惕中...'
+
     def get_trust_description(self) -> str:
+        """获取亲密度描述（兼容旧接口）"""
+        _, desc = self.get_trust_level()
+        return desc
+
+    def add_trust(self, amount: float, source: str) -> bool:
+        """增加亲密度（带每日上限）
+
+        Args:
+            amount: 增加量
+            source: 来源 ('chat', 'feed', 'clean', 'paper', 'streak')
+
+        Returns:
+            bool: 是否成功增加
+        """
+        from datetime import datetime
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        # 新的一天，重置计数
+        if self.data.get('trust_daily_date') != today:
+            self.data['trust_daily_date'] = today
+            self.data['trust_daily_gains'] = {
+                'chat': 0, 'feed': 0, 'clean': 0, 'paper': 0
+            }
+
+        # 检查每日上限
+        if source in TRUST_DAILY_LIMIT:
+            gains = self.data.get('trust_daily_gains', {})
+            current = gains.get(source, 0)
+            limit = TRUST_DAILY_LIMIT[source]
+
+            if current >= limit:
+                return False  # 达到上限
+
+            # 计算实际可增加的量
+            actual = min(amount, limit - current)
+            gains[source] = current + actual
+            self.data['trust_daily_gains'] = gains
+            amount = actual
+
+        # 增加亲密度
+        old_trust = self.get_trust()
+        self.data['trust'] = min(100, self.data.get('trust', 30) + amount)
+        self.data['last_interaction_time'] = time.time()
+
+        # 检查是否升级
+        new_trust = self.get_trust()
+        self._check_trust_level_up(old_trust, new_trust)
+
+        return True
+
+    def _check_trust_level_up(self, old_trust: float, new_trust: float) -> Optional[str]:
+        """检查亲密度是否升级，返回新等级名称"""
+        old_level = None
+        new_level = None
+
+        for (low, high), (name, _) in TRUST_LEVELS.items():
+            if low <= old_trust <= high:
+                old_level = name
+            if low <= new_trust <= high:
+                new_level = name
+
+        if old_level != new_level and new_level:
+            return new_level
+        return None
+
+    def check_trust_penalties(self) -> list:
+        """检查并执行亲密度惩罚，返回触发的惩罚列表"""
+        from datetime import datetime
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        # 新的一天，重置惩罚记录
+        if self.data.get('trust_penalty_date') != today:
+            self.data['trust_penalty_date'] = today
+            self.data['trust_penalties'] = {
+                'hunger_warned': False,
+                'dirty_warned': False,
+                'anger_count_today': 0,
+                'super_angry_penalized': False,
+            }
+
+        penalties = self.data.get('trust_penalties', {})
+        triggered = []
+
+        hunger = self.data.get('hunger', 80)
+        clean = self.data.get('cleanliness', 80)
+        happiness = self.data.get('happiness', 80)
+
+        # 饥饿警告（< 30）- 只触发一次/天
+        if hunger < 30 and not penalties.get('hunger_warned'):
+            self.modify_trust(TRUST_PENALTY['hunger_warning'])
+            penalties['hunger_warned'] = True
+            triggered.append('hunger_warning')
+
+        # 饿到极限（< 15）
+        if hunger < 15:
+            self.modify_trust(TRUST_PENALTY['hunger_critical'])
+            triggered.append('hunger_critical')
+
+        # 脏了警告（< 30）- 只触发一次/天
+        if clean < 30 and not penalties.get('dirty_warned'):
+            self.modify_trust(TRUST_PENALTY['dirty_warning'])
+            penalties['dirty_warned'] = True
+            triggered.append('dirty_warning')
+
+        # 心情崩溃（< 15）
+        if happiness < 15:
+            self.modify_trust(TRUST_PENALTY['happiness_crash'])
+            triggered.append('happiness_crash')
+
+        self.data['trust_penalties'] = penalties
+        return triggered
+
+    def record_anger_for_trust(self) -> float:
+        """记录一次生气（用于亲密度惩罚），返回扣除的亲密度"""
+        from datetime import datetime
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        # 确保惩罚数据存在
+        if self.data.get('trust_penalty_date') != today:
+            self.data['trust_penalty_date'] = today
+            self.data['trust_penalties'] = {
+                'hunger_warned': False,
+                'dirty_warned': False,
+                'anger_count_today': 0,
+                'super_angry_penalized': False,
+            }
+
+        penalties = self.data.get('trust_penalties', {})
+        penalties['anger_count_today'] = penalties.get('anger_count_today', 0) + 1
+        count = penalties['anger_count_today']
+        self.data['trust_penalties'] = penalties
+
+        # 第 2 次及以后每次 -0.5
+        if count >= 2:
+            self.modify_trust(TRUST_PENALTY['anger_repeat'])
+            return TRUST_PENALTY['anger_repeat']
+        return 0
+
+    def penalize_super_angry(self) -> bool:
+        """超级不爽惩罚（-3），返回是否执行了惩罚"""
+        penalties = self.data.get('trust_penalties', {})
+
+        if penalties.get('super_angry_penalized'):
+            return False
+
+        self.modify_trust(TRUST_PENALTY['super_angry'])
+        penalties['super_angry_penalized'] = True
+        self.data['trust_penalties'] = penalties
+        return True
+
+    def reset_super_angry_penalty(self) -> None:
+        """重置超级不爽惩罚标记（道歉/消气后调用）"""
+        penalties = self.data.get('trust_penalties', {})
+        penalties['super_angry_penalized'] = False
+        self.data['trust_penalties'] = penalties
+
+    def check_neglect_penalty(self) -> bool:
+        """检查是否因为太久没互动而扣亲密度"""
+        last = self.data.get('last_interaction_time')
+        if not last:
+            return False
+
+        hours = (time.time() - last) / 3600
+        if hours >= 24:
+            self.modify_trust(TRUST_PENALTY['neglect'])
+            self.data['last_interaction_time'] = time.time()  # 重置，避免重复扣
+            return True
+        return False
+
+    # ========== 闲聊系统 ==========
+
+    def get_casual_chat_limit(self) -> int:
+        """根据亲密度获取每日闲聊上限"""
         trust = self.get_trust()
-        if trust >= 81:
-            return "绝对信任！"
-        elif trust >= 61:
-            return "最喜欢你了！"
-        elif trust >= 41:
-            return "你还不错嘛"
-        elif trust >= 21:
-            return "有点信任你了"
+        if trust >= 80:
+            return 5
+        elif trust >= 60:
+            return 4
+        elif trust >= 40:
+            return 3
+        elif trust >= 20:
+            return 2
         else:
-            return "警惕中..."
+            return 1
+
+    def get_casual_chat_remaining(self) -> int:
+        """获取今日剩余闲聊次数"""
+        from datetime import datetime
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        # 新的一天，重置
+        if self.data.get('casual_chat_date') != today:
+            self.data['casual_chat_date'] = today
+            self.data['casual_chat_count_today'] = 0
+
+        limit = self.get_casual_chat_limit()
+        used = self.data.get('casual_chat_count_today', 0)
+        return max(0, limit - used)
+
+    def use_casual_chat(self) -> Tuple[bool, Optional[int]]:
+        """使用一次闲聊机会，返回 (是否成功, 升级后的等级)"""
+        if self.get_casual_chat_remaining() <= 0:
+            return False, None
+
+        from datetime import datetime
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        if self.data.get('casual_chat_date') != today:
+            self.data['casual_chat_date'] = today
+            self.data['casual_chat_count_today'] = 0
+
+        self.data['casual_chat_count_today'] += 1
+
+        # 行为统计和经验值
+        self.increment_behavior_stat('chat_count')
+        new_level = self.add_experience(EXP_REWARDS['chat'], 'chat')
+
+        return True, new_level
+
+    def can_casual_chat(self) -> bool:
+        """是否还可以闲聊"""
+        return self.get_casual_chat_remaining() > 0
 
     def get_loneliness_threshold(self) -> float:
         return LONELY_HOURS_BASE + self.get_trust_bonus() * 2
@@ -600,24 +1009,24 @@ class SaveManager:
         clean = self.data.get('cleanliness', 0)
         happy = self.data.get('happiness', 0)
 
+        # 检查太久没互动
+        self.check_neglect_penalty()
+
         if hunger >= 50 and clean >= 50 and happy >= 50:
             streak = self.data.get('trust_streak', 0) + 1
             self.data['trust_streak'] = streak
-            if streak >= 7:
-                self.modify_trust(TRUST_STREAK_7_BONUS)
-            elif streak >= 3:
-                self.modify_trust(TRUST_STREAK_3_BONUS)
-            else:
-                self.modify_trust(TRUST_DAILY_GOOD)
+
+            # 连续照顾 ≥ 3 天，额外 +1 亲密度
+            if streak >= 3:
+                self.modify_trust(TRUST_GAIN['streak'])
         else:
-            if hunger <= 0 or clean <= 0 or happy <= 0:
-                self.modify_trust(TRUST_ZERO_PENALTY)
-            if hunger < 30 and clean < 30 and happy < 30:
-                self.modify_trust(TRUST_NEGLECT_PENALTY)
+            # 状态不好，连续照顾中断
             self.data['trust_streak'] = 0
 
     def on_death(self) -> None:
         self.modify_trust(TRUST_DEATH_PENALTY)
+        # 行为统计
+        self.increment_behavior_stat('death_count')
 
     # ========== 心情系统 ==========
 
@@ -717,16 +1126,22 @@ class SaveManager:
         remaining = COMFORT_COOLDOWN - (time.time() - last_used)
         return max(0, int(remaining))
 
-    def comfort(self) -> bool:
+    def comfort(self) -> Tuple[bool, Optional[int]]:
+        """安慰，返回 (是否成功, 升级后的等级)"""
         if not self.can_comfort():
-            return False
+            return False, None
         mh = self.data.get('mood_history', {})
         mh['comfort_last_used'] = time.time()
         self.data['mood_history'] = mh
         self.modify_stat('happiness', MOOD_COMFORT_AMOUNT)
         self.modify_stat('vitality', 5)
         self.record_interaction()
-        return True
+
+        # 行为统计和经验值
+        self.increment_behavior_stat('comfort_count')
+        new_level = self.add_experience(EXP_REWARDS['comfort'], 'comfort')
+
+        return True, new_level
 
     # ========== 睡眠打扰系统 ==========
 
@@ -749,6 +1164,9 @@ class SaveManager:
             self.modify_stat('happiness', MOOD_NIGHT_DISTURB_FIRST)
         else:
             self.modify_stat('happiness', MOOD_NIGHT_DISTURB_AFTER)
+
+        # 行为统计
+        self.increment_behavior_stat('disturb_sleep')
 
         return count
 
@@ -965,10 +1383,6 @@ class SaveManager:
 
     def add_anger_click(self) -> Optional[int]:
         """增加生气点击计数，返回触发的生气等级（如果触发了的话）"""
-        # 只在工作时间触发
-        if not self.is_work_time():
-            return None
-
         em = self.get_emotion_data()
         now = time.time()
         window_start = em.get('anger_click_window_start')
@@ -1075,9 +1489,9 @@ class SaveManager:
 
         em['anger_level'] = level
 
-        # 设置冷战时间
+        # 设置冷战时间（所有等级都有）
+        em['anger_cooldown'] = COLD_WAR_DURATION.get(level, 10)
         if level >= 2:
-            em['anger_cooldown'] = COLD_WAR_DURATION.get(level, 30)
             em['cold_war_feed_count'] = 0
 
         # 重置计数
@@ -1086,6 +1500,16 @@ class SaveManager:
         # 扣除心情
         penalty = ANGER_HAPPINESS_PENALTY.get(level, 0)
         self.modify_stat('happiness', penalty)
+
+        # 记录生气次数并扣除亲密度
+        self.record_anger_for_trust()
+
+        # 超级不爽额外扣亲密度
+        if level >= 3:
+            self.penalize_super_angry()
+
+        # 行为统计
+        self.increment_behavior_stat('anger_triggered')
 
         self.data['emotion'] = em
         self._update_emotion_state()
@@ -1102,19 +1526,28 @@ class SaveManager:
     def cold_war_tick(self) -> bool:
         """冷战倒计时（每秒调用），返回是否自动消气了"""
         em = self.get_emotion_data()
+        anger_level = em.get('anger_level', 0)
+        cooldown = em.get('anger_cooldown', 0)
 
-        if em.get('anger_cooldown', 0) <= 0:
+        # 如果没有生气，直接返回
+        if anger_level == 0:
             return False
 
-        em['anger_cooldown'] -= 1
+        # 如果有生气但没有冷却时间（异常状态），直接消气
+        if cooldown <= 0 and anger_level < 3:
+            self._calm_down()
+            return True
+
+        # 正常倒计时
+        em['anger_cooldown'] = cooldown - 1
         self.data['emotion'] = em
 
-        # 冷战期间每 60 秒心情 -2
-        if em['anger_cooldown'] % 60 == 0 and em['anger_cooldown'] > 0:
+        # 冷战期间每 60 秒心情 -2（只对 level 2+ 生效）
+        if anger_level >= 2 and em['anger_cooldown'] % 60 == 0 and em['anger_cooldown'] > 0:
             self.modify_stat('happiness', -2)
 
         # 超级不爽不会自动解除，必须道歉
-        if em['anger_cooldown'] <= 0 and em.get('anger_level', 0) < 3:
+        if em['anger_cooldown'] <= 0 and anger_level < 3:
             self._calm_down()
             return True
 
@@ -1128,6 +1561,7 @@ class SaveManager:
         em['cold_war_feed_count'] = 0
         self._reset_anger_counts()
         self.modify_stat('happiness', CALM_DOWN_HAPPINESS_BONUS)
+        self.reset_super_angry_penalty()  # 重置超级不爽惩罚标记
         self.data['emotion'] = em
         self._update_emotion_state()
 
@@ -1180,6 +1614,7 @@ class SaveManager:
         em['cold_war_feed_count'] = 0
         self._reset_anger_counts()
         self.modify_stat('happiness', APOLOGY_HAPPINESS_BONUS)
+        self.reset_super_angry_penalty()  # 重置超级不爽惩罚标记
         self.data['emotion'] = em
         self._update_emotion_state()
 
@@ -1197,3 +1632,161 @@ class SaveManager:
         """是否应该显示道歉对话框"""
         em = self.get_emotion_data()
         return em.get('anger_level', 0) >= 3
+
+    # ========== 成长系统 ==========
+
+    def get_growth_data(self) -> Dict:
+        """获取成长数据"""
+        gd = self.data.get('growth_data', {})
+        defaults = {'total_exp': 0, 'level': 1}
+        for key, default in defaults.items():
+            if key not in gd:
+                gd[key] = default
+        self.data['growth_data'] = gd
+        return gd
+
+    def get_required_exp(self, level: int) -> int:
+        """获取升到下一级需要的累计经验"""
+        return level * 100 + (level - 1) * 50
+
+    def get_level_from_exp(self, total_exp: int) -> int:
+        """根据总经验计算等级"""
+        level = 1
+        while total_exp >= self.get_required_exp(level):
+            level += 1
+        return level - 1 if level > 1 else 1
+
+    def get_exp_progress(self) -> Tuple[int, int]:
+        """获取当前等级的经验进度 (当前, 需要)"""
+        gd = self.get_growth_data()
+        total_exp = gd['total_exp']
+        level = gd['level']
+        current_level_exp = self.get_required_exp(level - 1) if level > 1 else 0
+        next_level_exp = self.get_required_exp(level)
+        current = total_exp - current_level_exp
+        needed = next_level_exp - current_level_exp
+        return (current, needed)
+
+    def add_experience(self, amount: int, source: str = None) -> Optional[int]:
+        """增加经验值，返回升级后的新等级（如果升级了的话）"""
+        gd = self.get_growth_data()
+        old_level = gd['level']
+        gd['total_exp'] += amount
+        new_level = self.get_level_from_exp(gd['total_exp'])
+
+        if new_level > old_level:
+            gd['level'] = new_level
+            self.data['growth_data'] = gd
+            return new_level
+
+        self.data['growth_data'] = gd
+        return None
+
+    def get_level(self) -> int:
+        """获取当前等级"""
+        gd = self.get_growth_data()
+        return gd['level']
+
+    def get_level_stage(self) -> Dict:
+        """获取当前等级阶段信息"""
+        level = self.get_level()
+        for (low, high), info in LEVEL_STAGES.items():
+            if low <= level <= high:
+                return info
+        return LEVEL_STAGES[(1, 5)]  # 默认返回幼年期
+
+    # ========== 行为统计系统 ==========
+
+    def get_behavior_stats(self) -> Dict:
+        """获取行为统计数据"""
+        bs = self.data.get('behavior_stats', {})
+        defaults = {
+            'feed_count': 0, 'clean_count': 0, 'play_count': 0,
+            'pet_count': 0, 'comfort_count': 0,
+            'paper_reads': 0, 'paper_likes': 0, 'paper_bookmarks': 0,
+            'chat_count': 0, 'chat_messages': 0,
+            'anger_triggered': 0, 'disturb_sleep': 0,
+            'neglect_days': 0, 'death_count': 0,
+            'total_alive_days': 0, 'consecutive_care': 0,
+            'consecutive_care_max': 0, 'night_interactions': 0,
+        }
+        for key, default in defaults.items():
+            if key not in bs:
+                bs[key] = default
+        self.data['behavior_stats'] = bs
+        return bs
+
+    def increment_behavior_stat(self, stat_name: str, amount: int = 1) -> None:
+        """增加行为统计"""
+        bs = self.get_behavior_stats()
+        bs[stat_name] = bs.get(stat_name, 0) + amount
+        # 更新最大连续照顾天数
+        if stat_name == 'consecutive_care':
+            if bs['consecutive_care'] > bs['consecutive_care_max']:
+                bs['consecutive_care_max'] = bs['consecutive_care']
+        self.data['behavior_stats'] = bs
+
+    def check_new_unlocks(self) -> list:
+        """检查是否有新道具解锁，返回解锁的道具ID列表"""
+        try:
+            from items import check_all_unlocks
+            return check_all_unlocks(self)
+        except ImportError:
+            return []
+
+    # ========== 道具系统 ==========
+
+    def get_inventory(self) -> Dict:
+        """获取道具背包数据"""
+        inv = self.data.get('inventory', {})
+        defaults = {
+            'owned_items': ['hat_adventure', 'hat_bow', 'hat_sleep',
+                          'glasses_round', 'scarf_red'],
+            'equipped': {
+                'head': None, 'face': None, 'neck': None,
+                'hand': None, 'effect': None,
+            },
+        }
+        if 'owned_items' not in inv:
+            inv['owned_items'] = defaults['owned_items']
+        if 'equipped' not in inv:
+            inv['equipped'] = defaults['equipped']
+        self.data['inventory'] = inv
+        return inv
+
+    def owns_item(self, item_id: str) -> bool:
+        """检查是否拥有某道具"""
+        inv = self.get_inventory()
+        return item_id in inv['owned_items']
+
+    def unlock_item(self, item_id: str) -> bool:
+        """解锁道具，返回是否成功（如果已拥有则失败）"""
+        inv = self.get_inventory()
+        if item_id in inv['owned_items']:
+            return False
+        inv['owned_items'].append(item_id)
+        self.data['inventory'] = inv
+        return True
+
+    def equip_item(self, item_id: str, slot: str) -> bool:
+        """装备道具"""
+        inv = self.get_inventory()
+        if item_id not in inv['owned_items']:
+            return False
+        inv['equipped'][slot] = item_id
+        self.data['inventory'] = inv
+        return True
+
+    def unequip_item(self, slot: str) -> Optional[str]:
+        """卸下道具，返回被卸下的道具ID"""
+        inv = self.get_inventory()
+        item_id = inv['equipped'].get(slot)
+        if item_id:
+            inv['equipped'][slot] = None
+            self.data['inventory'] = inv
+        return item_id
+
+    def get_equipped_items(self) -> Dict[str, Optional[str]]:
+        """获取所有已装备的道具"""
+        inv = self.get_inventory()
+        return inv.get('equipped', {})

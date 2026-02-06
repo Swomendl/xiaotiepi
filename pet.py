@@ -12,15 +12,18 @@ import random
 import sprites
 import sounds
 from sprites import (SPRITES, COLORS, get_canvas_size, get_sprite,
-                     get_dynamic_colors, get_all_colors, get_season_accessory,
+                     get_dynamic_colors, get_all_colors,
                      get_current_season, SEASON_COLORS,
                      SPRITE_SHOWER_HEAD, SPRITE_ONIGIRI, SPRITE_PS4_CONTROLLER,
                      SPRITE_DREAM_CLOUD, SPRITE_NIGHTMARE_CLOUD,
                      DREAM_ICONS_GOOD, DREAM_ICONS_BAD, HAPPY_EVENT_SPRITES,
-                     ANIMATION_COLORS, SPRITE_PAPER)
+                     ANIMATION_COLORS, SPRITE_PAPER,
+                     add_outline, get_shadow_positions)
 from bubble import save_custom_dialogue
 from save import SaveManager
 from bubble import Bubble, PaperBubbleManager
+from casual_chat_window import CasualChatWindow
+from inventory_window import InventoryWindow
 import threading
 from datetime import datetime
 
@@ -206,6 +209,13 @@ class Pet:
         self.today_papers = []
         self.paper_briefing_ready = False
 
+        # 日常闲聊系统
+        self.casual_chat_window = None
+        self.last_casual_chat_time = 0
+
+        # 背包系统
+        self.inventory_window = None
+
         # 大小设置
         self.size_options = {'迷你': 4, '小': 5, '中': 7, '大': 10, '巨大': 14}
         self.current_size_name = '中'
@@ -265,6 +275,8 @@ class Pet:
         self.menu.add_command(label='💬 说点什么', command=self._say_something)
         self.menu.add_command(label='🎓 教它说话', command=self._teach_dialogue)
         self.menu.add_command(label='🫂 安慰一下', command=self._comfort)
+        self.menu.add_command(label='🎒 背包', command=self._open_inventory)
+        self.menu.add_command(label='💬 聊聊天', command=self._open_casual_chat_menu)
         self.menu.add_separator()
         self.menu.add_command(label='📰 今日论文', command=self._open_paper_chat)
         self.menu.add_command(label='🔑 设置 API Key', command=self._set_api_key)
@@ -308,6 +320,10 @@ class Pet:
     def _get_current_sprite(self):
         body_type = self.save_manager.get_body_type()
 
+        # 被拖拽时显示拖拽精灵
+        if self.drag_data.get('dragging'):
+            return get_sprite(body_type, 'dragging')[0]
+
         if self.is_dizzy or self.is_falling:
             return get_sprite(body_type, 'dizzy')[0]
 
@@ -347,7 +363,7 @@ class Pet:
             return get_sprite(body_type, 'happy')[0]
 
         if self.is_blinking:
-            return get_sprite(body_type, 'idle')[1]
+            return get_sprite(body_type, 'blink')[0]
 
         if self.is_looking_around:
             return get_sprite(body_type, f'look_{self.look_direction}')[0]
@@ -407,36 +423,53 @@ class Pet:
         if flip:
             sprite = [row[::-1] for row in sprite]
 
-        for r, row in enumerate(sprite):
+        # 获取当前状态用于选择轮廓颜色
+        current_status = self.save_manager.get_status()
+        outline_color_code = 7 if current_status == 'dead' else 99  # 死亡用灰色轮廓
+
+        # 给精灵添加轮廓线（返回扩展后的精灵，尺寸+2）
+        outlined_sprite = add_outline(sprite, outline_color=outline_color_code)
+
+        # 投影偏移量
+        shadow_offset_x = 1
+        shadow_offset_y = 2
+        shadow_color = '#505050'  # 深灰色投影
+
+        # 1. 先画投影（在精灵下层）
+        shadow_positions = get_shadow_positions(sprite, shadow_offset_x, shadow_offset_y)
+        for sx, sy in shadow_positions:
+            # +1 因为轮廓扩展了边界
+            x1 = pad + (sx + 1) * ps
+            y1 = pad + (sy + 1) * ps + oy
+            if self.is_sitting and sy >= 7:
+                x1 += foot_swing
+            self.canvas.create_rectangle(
+                x1, y1, x1 + ps, y1 + ps,
+                fill=shadow_color, outline=shadow_color
+            )
+
+        # 2. 画带轮廓的精灵
+        for r, row in enumerate(outlined_sprite):
             for c, val in enumerate(row):
                 if val == 0:
                     continue
                 color = colors.get(val, '#D4856A')
                 x1 = pad + c * ps
                 y1 = pad + r * ps + oy
-                if self.is_sitting and r >= 7:
+                # 调整坐标：因为轮廓扩展了，所以实际精灵内容从 (1,1) 开始
+                # 但坐位时脚的摇摆只对原始精灵位置（r-1 >= 7，即 r >= 8）生效
+                if self.is_sitting and r >= 8:
                     x1 += foot_swing
                 self.canvas.create_rectangle(
                     x1, y1, x1 + ps, y1 + ps,
                     fill=color, outline=color
                 )
 
-        # 绘制季节配件（睡觉时不显示）
-        if status != 'sleep' and status != 'dead':
-            accessory = get_season_accessory()
-            if accessory:
-                acc = [row[::-1] for row in accessory] if flip else accessory
-                for r, row in enumerate(acc):
-                    for c, val in enumerate(row):
-                        if val == 0:
-                            continue
-                        color = colors.get(val, '#FFFFFF')
-                        x1 = pad + c * ps
-                        y1 = pad + r * ps + oy
-                        self.canvas.create_rectangle(
-                            x1, y1, x1 + ps, y1 + ps,
-                            fill=color, outline=color
-                        )
+        # 绘制装备的道具（用户从背包自己装备，不再自动显示季节配件）
+        self._draw_equipped_items(pad, oy, colors, status, flip)
+
+        # 绘制头顶等级标签
+        self._draw_head_ui(pad, oy)
 
         # 绘制 Zzz 动画（睡觉时）
         if status == 'sleep':
@@ -522,6 +555,197 @@ class Pet:
                 font=('Arial', size, 'bold'),
                 fill=color
             )
+
+    def _draw_equipped_items(self, pad: int, oy: int, colors: dict, status: str, flip: bool) -> None:
+        """绘制装备的道具"""
+        try:
+            from items import ITEMS, should_show_items, get_item_offset
+        except ImportError:
+            return
+
+        # 检查是否应该显示道具
+        if not should_show_items(status):
+            return
+
+        ps = sprites.PIXEL_SIZE
+        body_type = self.save_manager.get_body_type()
+        equipped = self.save_manager.get_equipped_items()
+
+        # 按层级顺序渲染：脖子 → 脸 → 头
+        render_order = ['neck', 'face', 'head']
+
+        for slot in render_order:
+            item_id = equipped.get(slot)
+            if not item_id:
+                continue
+
+            item = ITEMS.get(item_id)
+            if not item or not item.get('sprite'):
+                continue
+
+            # 计算最终偏移
+            offset = get_item_offset(item, status, body_type)
+
+            # 获取道具精灵
+            item_sprite = item['sprite']
+            if flip:
+                item_sprite = [row[::-1] for row in item_sprite]
+
+            # 绘制道具精灵
+            # 偏移量基于轮廓化后的精灵左上角，所以需要 +1 补偿轮廓扩展
+            for r, row in enumerate(item_sprite):
+                for c, val in enumerate(row):
+                    if val == 0:
+                        continue
+                    color = colors.get(val, '#FF00FF')
+                    x1 = pad + (c + offset[0] + 1) * ps
+                    y1 = pad + (r + offset[1] + 1) * ps + oy
+                    self.canvas.create_rectangle(
+                        x1, y1, x1 + ps, y1 + ps,
+                        fill=color, outline=color
+                    )
+
+    def _draw_head_ui(self, pad: int, oy: int) -> None:
+        """绘制头顶 UI（像素风格等级标签）"""
+        # 像素字体定义 (3x5 每个字符)
+        PIXEL_FONT = {
+            'L': [
+                [1,0,0],
+                [1,0,0],
+                [1,0,0],
+                [1,0,0],
+                [1,1,1],
+            ],
+            'v': [
+                [0,0,0],
+                [1,0,1],
+                [1,0,1],
+                [1,0,1],
+                [0,1,0],
+            ],
+            '.': [
+                [0,0,0],
+                [0,0,0],
+                [0,0,0],
+                [0,0,0],
+                [0,1,0],
+            ],
+            '0': [
+                [1,1,1],
+                [1,0,1],
+                [1,0,1],
+                [1,0,1],
+                [1,1,1],
+            ],
+            '1': [
+                [0,1,0],
+                [1,1,0],
+                [0,1,0],
+                [0,1,0],
+                [1,1,1],
+            ],
+            '2': [
+                [1,1,1],
+                [0,0,1],
+                [1,1,1],
+                [1,0,0],
+                [1,1,1],
+            ],
+            '3': [
+                [1,1,1],
+                [0,0,1],
+                [1,1,1],
+                [0,0,1],
+                [1,1,1],
+            ],
+            '4': [
+                [1,0,1],
+                [1,0,1],
+                [1,1,1],
+                [0,0,1],
+                [0,0,1],
+            ],
+            '5': [
+                [1,1,1],
+                [1,0,0],
+                [1,1,1],
+                [0,0,1],
+                [1,1,1],
+            ],
+            '6': [
+                [1,1,1],
+                [1,0,0],
+                [1,1,1],
+                [1,0,1],
+                [1,1,1],
+            ],
+            '7': [
+                [1,1,1],
+                [0,0,1],
+                [0,0,1],
+                [0,0,1],
+                [0,0,1],
+            ],
+            '8': [
+                [1,1,1],
+                [1,0,1],
+                [1,1,1],
+                [1,0,1],
+                [1,1,1],
+            ],
+            '9': [
+                [1,1,1],
+                [1,0,1],
+                [1,1,1],
+                [0,0,1],
+                [1,1,1],
+            ],
+        }
+
+        pixel_size = 2  # 每个像素块的大小
+        char_gap = 1    # 字符间距
+
+        # 获取等级
+        level = self.save_manager.get_level()
+        text = f"Lv.{level}"
+
+        # 计算总宽度
+        total_width = 0
+        for char in text:
+            if char in PIXEL_FONT:
+                total_width += len(PIXEL_FONT[char][0]) * pixel_size + char_gap
+
+        # 计算起始位置（居中）
+        ps = sprites.PIXEL_SIZE
+        center_x = pad + 6 * ps
+        top_y = pad + oy
+        start_x = center_x - total_width // 2
+        label_y = top_y - 12
+
+        # 绘制像素文字
+        current_x = start_x
+        for char in text:
+            if char not in PIXEL_FONT:
+                continue
+            glyph = PIXEL_FONT[char]
+            for r, row in enumerate(glyph):
+                for c, val in enumerate(row):
+                    if val:
+                        px = current_x + c * pixel_size
+                        py = label_y + r * pixel_size
+                        # 阴影（偏移1像素）
+                        self.canvas.create_rectangle(
+                            px + 1, py + 1,
+                            px + pixel_size + 1, py + pixel_size + 1,
+                            fill='#000000', outline=''
+                        )
+                        # 主体（白色）
+                        self.canvas.create_rectangle(
+                            px, py,
+                            px + pixel_size, py + pixel_size,
+                            fill='#FFFFFF', outline=''
+                        )
+            current_x += len(glyph[0]) * pixel_size + char_gap
 
     def _draw_season_effects(self, pad: int, oy: int) -> None:
         """绘制季节特效（像素风格）"""
@@ -849,9 +1073,15 @@ class Pet:
             if datetime.now().hour == 8:
                 self.save_manager.clear_bad_sleep()
 
+            # 检查亲密度惩罚
+            self.save_manager.check_trust_penalties()
+
             status = self.save_manager.get_status()
             if status in ['hungry', 'dirty', 'sad', 'sick']:
                 self.bubble.say_random(status)
+            else:
+                # 正常状态下有机会主动冒泡（可点击进入闲聊）
+                self._try_casual_bubble()
 
         self._check_dream_trigger()
         self._check_paper_reminder()
@@ -952,18 +1182,23 @@ class Pet:
             self.bubble.show('……(右键可以复活我)')
             return
 
+        # 始终记录点击（用于统计）
+        self.save_manager.record_click()
+
         # 检查情绪状态
         emotion_state = self.save_manager.get_emotion_state()
         anger_level = self.save_manager.get_new_anger_level()
 
-        # 超级不爽：完全不响应点击
+        # 超级不爽：完全不响应点击，但仍计数
         if anger_level >= 3:
+            self.save_manager.add_anger_click()
             if random.random() < 0.3:
                 self.bubble.say_random('cold_war')
             return
 
         # 生气中：响应但不给正面反馈
         if anger_level >= 2:
+            self.save_manager.add_anger_click()
             self.bubble.say_random('cold_war')
             return
 
@@ -982,8 +1217,7 @@ class Pet:
             self._trigger_sleep_disturb_emotion()
             return
 
-        # 正常状态下，记录点击并检查是否触发生气
-        self.save_manager.record_click()
+        # 正常状态下，检查是否触发生气
         triggered = self.save_manager.add_anger_click()
         if triggered:
             self._on_anger_triggered(triggered)
@@ -1031,13 +1265,15 @@ class Pet:
         if self._feed_with_emotion():
             return
 
-        full_bonus, full_service = self.save_manager.feed()
+        full_bonus, full_service, trust_gained, new_level = self.save_manager.feed()
         self.is_eating = True
         self.eat_timer = self.eat_duration
         self.eat_phase = 0
         sounds.play('feed')
 
-        if full_service:
+        if new_level:
+            self._on_level_up(new_level)
+        elif full_service:
             self.bubble.show('全套服务！小铁皮超满足~')
         elif full_bonus:
             self.bubble.show('吃饱了！好满足~')
@@ -1055,13 +1291,15 @@ class Pet:
             self._trigger_sleep_disturb_emotion()
             return
 
-        clean_bonus, full_service = self.save_manager.bath()
+        clean_bonus, full_service, trust_gained, new_level = self.save_manager.bath()
         self.is_bathing = True
         self.bath_timer = self.bath_duration
         self.water_drops = []
         sounds.play('bath')
 
-        if full_service:
+        if new_level:
+            self._on_level_up(new_level)
+        elif full_service:
             self.bubble.show('全套服务！小铁皮超满足~')
         elif clean_bonus:
             self.bubble.show('洗香香了！神清气爽~')
@@ -1079,13 +1317,15 @@ class Pet:
             self._trigger_sleep_disturb_emotion()
             return
 
-        full_service = self.save_manager.play()
+        full_service, new_level = self.save_manager.play()
         self.is_playing_game = True
         self.play_timer = self.play_duration
         self.button_blink_timer = 0
         sounds.play('play')
 
-        if full_service:
+        if new_level:
+            self._on_level_up(new_level)
+        elif full_service:
             self.bubble.show('全套服务！小铁皮超满足~')
         else:
             self.bubble.show('好开心！(≧▽≦)')
@@ -1242,6 +1482,32 @@ class Pet:
         elif level >= 2:
             self.bubble.say_random('angry')
 
+    def _on_level_up(self, new_level: int) -> None:
+        """当升级时"""
+        # 播放跳跃动画
+        if not self.jumping:
+            self.jumping = True
+            self.jump_vy = self.jump_velocity
+
+        # 显示升级气泡
+        stage_info = self.save_manager.get_level_stage()
+        self.bubble.show(f"⭐ 升级了！Lv.{new_level}\n【{stage_info['title']}】")
+
+        # 设置开心状态
+        self.happy_timer = 60
+
+        # 检查是否解锁新道具
+        new_items = self.save_manager.check_new_unlocks()
+        if new_items:
+            # 延迟显示解锁通知
+            self.root.after(2000, lambda: self._show_unlock_notification(new_items))
+
+    def _show_unlock_notification(self, item_ids: list) -> None:
+        """显示道具解锁通知"""
+        # TODO: 从 items.py 获取道具名称
+        if item_ids:
+            self.bubble.show(f"🎁 解锁了新道具！")
+
     def _trigger_sleep_disturb_emotion(self) -> None:
         """使用情绪系统处理深夜打扰"""
         triggered = self.save_manager.handle_night_disturb()
@@ -1328,28 +1594,32 @@ class Pet:
 
     def _update_cold_war(self) -> None:
         """更新冷战状态（每秒调用一次）"""
-        if not self.save_manager.is_in_cold_war():
+        anger_level = self.save_manager.get_new_anger_level()
+        if anger_level == 0:
             return
 
-        # 冷战倒计时
+        # 冷战倒计时（所有等级都需要）
         calmed = self.save_manager.cold_war_tick()
         if calmed:
-            self.bubble.say_random('calm_down')
-            self._close_apology_dialog()
-            # 和好时小跳一下
-            self.happy_timer = 30
-            if not self.jumping:
-                self.jumping = True
-                self.jump_vy = self.jump_velocity
-                self.jump_y = 0.0
+            # Level 1 静默消气，Level 2+ 显示消气提示
+            if anger_level >= 2:
+                self.bubble.say_random('calm_down')
+                self._close_apology_dialog()
+                # 和好时小跳一下
+                self.happy_timer = 30
+                if not self.jumping:
+                    self.jumping = True
+                    self.jump_vy = self.jump_velocity
+                    self.jump_y = 0.0
             return
 
-        # 冷战期间随机说话
-        now = time.time()
-        if now - self.last_cold_war_bubble > 10:  # 每10秒最多说一次
-            if random.random() < 0.1:  # 10% 概率
-                self.bubble.say_random('cold_war')
-                self.last_cold_war_bubble = now
+        # 冷战期间随机说话（只对 level 2+ 生效）
+        if anger_level >= 2:
+            now = time.time()
+            if now - self.last_cold_war_bubble > 10:  # 每10秒最多说一次
+                if random.random() < 0.1:  # 10% 概率
+                    self.bubble.say_random('cold_war')
+                    self.last_cold_war_bubble = now
 
     def _feed_with_emotion(self) -> None:
         """带情绪处理的喂食"""
@@ -1374,6 +1644,169 @@ class Pet:
                     self.bubble.say_random('cold_war_feed_super')
             return True
         return False
+
+    # ========== 日常闲聊系统 ==========
+
+    def _can_open_casual_chat(self) -> bool:
+        """检查是否可以打开日常闲聊"""
+        # 任何程度的生气都不行
+        if self.save_manager.get_new_anger_level() >= 1:
+            return False
+
+        # 睡觉/晕倒/死亡不行
+        if self.save_manager.get_status() in ['sleep', 'dead']:
+            return False
+        if self.is_dizzy or self.is_falling:
+            return False
+
+        # 冷却时间（1 分钟）
+        if time.time() - self.last_casual_chat_time < 60:
+            return False
+
+        # 已经在闲聊中
+        if self.casual_chat_window:
+            return False
+
+        # 今日次数用完
+        if not self.save_manager.can_casual_chat():
+            return False
+
+        return True
+
+    def _open_casual_chat(self) -> None:
+        """打开日常闲聊窗口"""
+        if not self._can_open_casual_chat():
+            return
+
+        if self.casual_chat_window:
+            return
+
+        # 消耗一次闲聊机会
+        success, new_level = self.save_manager.use_casual_chat()
+        if new_level:
+            self._on_level_up(new_level)
+        self.save_manager.save()
+
+        self.casual_chat_window = CasualChatWindow(
+            self.root,
+            self.save_manager,
+            on_close=self._on_casual_chat_close
+        )
+        self.casual_chat_window.show()
+        self.last_casual_chat_time = time.time()
+
+    def _on_casual_chat_close(self) -> None:
+        """闲聊窗口关闭回调"""
+        self.casual_chat_window = None
+
+    # ========== 背包系统 ==========
+
+    def _open_inventory(self) -> None:
+        """打开背包窗口"""
+        if self.inventory_window:
+            return
+
+        self.inventory_window = InventoryWindow(
+            self.root,
+            self.save_manager,
+            on_close=self._on_inventory_close
+        )
+        self.inventory_window.show()
+
+    def _on_inventory_close(self) -> None:
+        """背包窗口关闭回调"""
+        self.inventory_window = None
+
+    def _open_casual_chat_menu(self) -> None:
+        """从菜单打开闲聊（带条件检查和反馈）"""
+        # 已经在闲聊中
+        if self.casual_chat_window:
+            return
+
+        # 死亡
+        if self.save_manager.data.get('is_dead'):
+            self.bubble.show('……')
+            return
+
+        # 睡觉
+        if self.save_manager.get_status() == 'sleep':
+            self.bubble.show('zzZ...别吵...让我睡...')
+            return
+
+        # 晕倒
+        if self.is_dizzy or self.is_falling:
+            self.bubble.show('头...好晕...')
+            return
+
+        # 生气
+        anger_level = self.save_manager.get_new_anger_level()
+        if anger_level >= 3:
+            self.bubble.show('哼！不想跟你说话！')
+            return
+        elif anger_level >= 2:
+            self.bubble.show('...现在不想聊')
+            return
+        elif anger_level >= 1:
+            self.bubble.show('嗯...有点不想说话')
+            return
+
+        # 冷却中
+        if time.time() - self.last_casual_chat_time < 60:
+            self.bubble.show('刚聊过嘛...等会儿再聊~')
+            return
+
+        # 今日次数用完
+        if not self.save_manager.can_casual_chat():
+            limit = self.save_manager.get_casual_chat_limit()
+            self.bubble.show(f'今天已经聊了{limit}次啦...明天再聊~')
+            return
+
+        # 可以聊天
+        self._open_casual_chat()
+
+    def _try_casual_bubble(self) -> None:
+        """尝试显示可点击的闲聊气泡"""
+        # 不能打开闲聊就不显示
+        if not self._can_open_casual_chat():
+            return
+
+        # 根据亲密度计算概率
+        trust = self.save_manager.get_trust()
+        # 亲密度 0 → 1%，50 → 2%，100 → 3%
+        chance = 0.01 + (trust / 100) * 0.02
+
+        if random.random() < chance:
+            # 选择闲聊邀请台词
+            if trust < 40:
+                messages = [
+                    '...在吗',
+                    '嗯...',
+                    '诶',
+                ]
+            elif trust < 70:
+                messages = [
+                    '想聊点什么吗~',
+                    '有空吗？',
+                    '在忙吗~',
+                    '嘿嘿',
+                ]
+            else:
+                messages = [
+                    '来聊天嘛~',
+                    '陪我说说话呀',
+                    '想你了！',
+                    '有件事想跟你说~',
+                    '嘿！注意到我~',
+                ]
+
+            text = random.choice(messages)
+            # 显示可点击气泡
+            self.bubble.show(
+                text,
+                duration=8000,
+                clickable=True,
+                on_click=self._open_casual_chat
+            )
 
     def _update_dizzy(self) -> None:
         """更新晕倒状态"""
@@ -1740,12 +2173,16 @@ class Pet:
             self.bubble.show(f'刚被安慰过啦...再等{mins}分钟')
             return
 
-        if self.save_manager.comfort():
+        success, new_level = self.save_manager.comfort()
+        if success:
             self.is_being_comforted = True
             self.comfort_timer = 60
-            msgs = ["谢谢你...小铁皮好多了 🥺", "你还记得我...呜呜",
-                    "被安慰了，小铁皮充满力量！", "这个拥抱好温暖..."]
-            self.bubble.show(random.choice(msgs))
+            if new_level:
+                self._on_level_up(new_level)
+            else:
+                msgs = ["谢谢你...小铁皮好多了 🥺", "你还记得我...呜呜",
+                        "被安慰了，小铁皮充满力量！", "这个拥抱好温暖..."]
+                self.bubble.show(random.choice(msgs))
 
     def _update_comfort(self) -> None:
         if self.is_being_comforted:
@@ -2129,7 +2566,8 @@ class Pet:
             self.paper_chat_window = PaperChatWindow(
                 self.root,
                 self.today_papers,
-                on_close=self._on_paper_chat_close
+                on_close=self._on_paper_chat_close,
+                save_manager=self.save_manager
             )
             self.paper_chat_window.show()
 
@@ -2205,3 +2643,8 @@ class Pet:
     def run(self) -> None:
         """启动主循环"""
         self.root.mainloop()
+
+
+if __name__ == '__main__':
+    pet = Pet()
+    pet.run()

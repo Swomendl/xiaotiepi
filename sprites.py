@@ -1,6 +1,8 @@
 """
 sprites.py - 小铁皮的像素精灵图数据
 基于 Claude 的形象设计：10x9 像素，有小耳朵的暖色调小方块
+
+视觉升级 v2: 使用轮廓线 + 投影实现立体感（而非内部光影点）
 """
 
 from typing import List, Dict, Tuple
@@ -26,6 +28,7 @@ def lerp_color(color1: str, color2: str, t: float) -> str:
     b = int(b1 + (b2 - b1) * t)
     return rgb_to_hex(r, g, b)
 
+
 # 基础调色板 - Claude 暖色调
 COLORS: Dict[int, str] = {
     0: '',           # 透明
@@ -37,19 +40,23 @@ COLORS: Dict[int, str] = {
     6: '#87CEEB',    # 蓝色 - 汗水/眼泪
     7: '#808080',    # 灰色 - 死亡
     8: '#FF6B6B',    # 红色 - 生气
+    # 轮廓线颜色（渲染时自动添加，不在精灵数据中使用）
+    99: '#8B5A4A',   # 轮廓线 - 深棕色，比身体色深
 }
 
+# 投影颜色（半透明效果通过 alpha 实现）
+SHADOW_COLOR = '#00000040'  # 带透明度的黑色
+
 # 活力值影响的颜色范围
-# 活力值低（0）→ 很淡的颜色
-# 活力值中（50）→ 基准颜色
-# 活力值高（100）→ 很深的颜色
 COLOR_FADED = {
     1: '#F0D0C4',    # 很淡的珊瑚色（褪色）
     3: '#E0B8A8',    # 很淡的阴影色
+    99: '#C0A090',   # 很淡的轮廓色
 }
 COLOR_VIBRANT = {
     1: '#A85540',    # 很深的橙色（充满活力）
     3: '#8B4030',    # 很深的阴影色
+    99: '#5A3020',   # 很深的轮廓色
 }
 
 
@@ -59,29 +66,109 @@ def get_dynamic_colors(vitality: float) -> Dict[int, str]:
     vitality: 0-100
     """
     colors = COLORS.copy()
-
-    # 归一化到 0-1
     t = max(0, min(100, vitality)) / 100.0
-
-    # 身体颜色根据活力值变化
+    
+    dynamic_color_indices = [1, 3, 99]
+    
     if t < 0.5:
-        # 0-50: 从褪色到基准
         ratio = t / 0.5
-        colors[1] = lerp_color(COLOR_FADED[1], COLORS[1], ratio)
-        colors[3] = lerp_color(COLOR_FADED[3], COLORS[3], ratio)
+        for idx in dynamic_color_indices:
+            if idx in COLOR_FADED and idx in COLORS:
+                colors[idx] = lerp_color(COLOR_FADED[idx], COLORS[idx], ratio)
     else:
-        # 50-100: 从基准到深色
         ratio = (t - 0.5) / 0.5
-        colors[1] = lerp_color(COLORS[1], COLOR_VIBRANT[1], ratio)
-        colors[3] = lerp_color(COLORS[3], COLOR_VIBRANT[3], ratio)
-
+        for idx in dynamic_color_indices:
+            if idx in COLOR_VIBRANT and idx in COLORS:
+                colors[idx] = lerp_color(COLORS[idx], COLOR_VIBRANT[idx], ratio)
+    
     return colors
+
 
 PIXEL_SIZE = 7  # 每个像素的实际大小
 
 # ═══════════════════════════════════════════════════════════════
+#  轮廓线 & 投影生成函数
+# ═══════════════════════════════════════════════════════════════
+
+def add_outline(sprite: List[List[int]], outline_color: int = 99) -> List[List[int]]:
+    """
+    为精灵图自动添加轮廓线
+    在所有非透明像素的外围（上下左右相邻的透明位置）添加轮廓色
+    
+    返回一个扩展后的精灵图（尺寸 +2 以容纳轮廓）
+    """
+    if not sprite or not sprite[0]:
+        return sprite
+    
+    h = len(sprite)
+    w = len(sprite[0])
+    
+    # 创建扩展后的画布（上下左右各 +1）
+    new_h = h + 2
+    new_w = w + 2
+    result = [[0] * new_w for _ in range(new_h)]
+    
+    # 先复制原始精灵到中心位置
+    for y in range(h):
+        for x in range(w):
+            result[y + 1][x + 1] = sprite[y][x]
+    
+    # 在非透明像素周围添加轮廓
+    for y in range(h):
+        for x in range(w):
+            if sprite[y][x] != 0:  # 非透明像素
+                # 检查四个方向（上下左右）
+                for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    ny, nx = y + 1 + dy, x + 1 + dx
+                    # 如果相邻位置是透明的，画轮廓
+                    if result[ny][nx] == 0:
+                        result[ny][nx] = outline_color
+    
+    return result
+
+
+def add_outline_and_shadow(sprite: List[List[int]], 
+                           outline_color: int = 99,
+                           shadow_offset: Tuple[int, int] = (1, 2)) -> Tuple[List[List[int]], int, int]:
+    """
+    为精灵图添加轮廓线和投影
+    
+    返回: (扩展后的精灵图, 投影X偏移, 投影Y偏移)
+    投影需要在渲染时单独绘制（因为需要半透明效果）
+    """
+    outlined = add_outline(sprite, outline_color)
+    return outlined, shadow_offset[0], shadow_offset[1]
+
+
+def get_shadow_positions(sprite: List[List[int]], 
+                         offset_x: int = 1, 
+                         offset_y: int = 2) -> List[Tuple[int, int]]:
+    """
+    获取投影需要绘制的像素位置列表
+    
+    返回: [(x, y), ...] 相对于精灵左上角的投影像素坐标
+    """
+    if not sprite or not sprite[0]:
+        return []
+    
+    h = len(sprite)
+    w = len(sprite[0])
+    shadow_positions = []
+    
+    for y in range(h):
+        for x in range(w):
+            if sprite[y][x] != 0:  # 非透明像素
+                shadow_x = x + offset_x
+                shadow_y = y + offset_y
+                shadow_positions.append((shadow_x, shadow_y))
+    
+    return shadow_positions
+
+
+# ═══════════════════════════════════════════════════════════════
 #  精灵图定义 (10 wide × 9 tall)
 #  0 = 透明, 1 = 身体, 2 = 眼睛, 3 = 深色
+#  【已恢复原始配色，去掉了内部光影点】
 # ═══════════════════════════════════════════════════════════════
 
 # 正常状态
@@ -266,6 +353,7 @@ SPRITE_DIZZY: List[List[int]] = [
     [0, 0, 0, 0, 0, 0, 0, 1, 1, 0],
 ]
 
+# 打哈欠
 SPRITE_YAWN: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -278,6 +366,7 @@ SPRITE_YAWN: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
+# 坐下
 SPRITE_SIT: List[List[int]] = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
@@ -290,6 +379,7 @@ SPRITE_SIT: List[List[int]] = [
     [0, 0, 1, 1, 0, 0, 1, 1, 0, 0],
 ]
 
+# 跑步 A
 SPRITE_RUN_A: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -298,10 +388,11 @@ SPRITE_RUN_A: List[List[int]] = [
     [1, 1, 2, 2, 1, 1, 2, 2, 1, 1],
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [0, 1, 1, 0, 0, 0, 0, 0, 1, 1],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 0, 0, 0, 0, 0, 0, 1, 0],
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
 ]
 
+# 跑步 B
 SPRITE_RUN_B: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -310,10 +401,11 @@ SPRITE_RUN_B: List[List[int]] = [
     [1, 1, 2, 2, 1, 1, 2, 2, 1, 1],
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 0, 0, 0, 0, 0, 0, 1, 1],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 1, 1, 0, 0, 1, 1, 0, 0],
+    [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
+# 跳跃
 SPRITE_HOP: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -326,6 +418,7 @@ SPRITE_HOP: List[List[int]] = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 ]
 
+# 向左看
 SPRITE_LOOK_LEFT: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -338,6 +431,7 @@ SPRITE_LOOK_LEFT: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
+# 向右看
 SPRITE_LOOK_RIGHT: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -350,6 +444,7 @@ SPRITE_LOOK_RIGHT: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
+# 向上看
 SPRITE_LOOK_UP: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -362,46 +457,60 @@ SPRITE_LOOK_UP: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
+# ═══════════════════════════════════════════════════════════════
+#  拖拽精灵图（保留！笨笨的很可爱）
+# ═══════════════════════════════════════════════════════════════
+
+# 被拖拽 - 身体拉长，耳朵聚拢，脚悬空
+SPRITE_DRAGGING: List[List[int]] = [
+    [0, 0, 1, 1, 0, 0, 1, 1, 0, 0],  # 耳朵向内聚拢
+    [0, 0, 1, 1, 1, 1, 1, 1, 0, 0],  # 头部变窄
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    [0, 1, 1, 2, 1, 1, 2, 1, 1, 0],  # 眼睛（惊讶）
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    [0, 0, 1, 1, 1, 1, 1, 1, 0, 0],  # 身体收窄
+    [0, 0, 0, 1, 0, 0, 1, 0, 0, 0],  # 脚悬空、内收
+]
 
 # ═══════════════════════════════════════════════════════════════
-#  状态到精灵帧的映射
+#  体型变体生成
 # ═══════════════════════════════════════════════════════════════
 
 def _make_fat(sprite: List[List[int]]) -> List[List[int]]:
+    """生成胖版精灵（左右各扩展1列）"""
     result = []
-    for i, row in enumerate(sprite):
-        if i < 6:
-            new_row = [0] + row + [0]
-        else:
-            if row[0] == 0 and row[-1] == 0:
-                new_row = [0] + [row[1]] + row[1:-1] + [row[-2]] + [0]
-            else:
-                new_row = [row[0]] + row + [row[-1]]
+    for row in sprite:
+        new_row = [row[0]] + list(row) + [row[-1]]
         result.append(new_row)
     return result
+
 
 def _make_thin(sprite: List[List[int]]) -> List[List[int]]:
+    """生成瘦版精灵（左右各收缩1列，但保持最小宽度）"""
     result = []
-    for i, row in enumerate(sprite):
-        if i < 6:
-            new_row = row[:]
+    for row in sprite:
+        if len(row) > 6:
+            new_row = row[1:-1]
         else:
-            new_row = row[:]
-            if row[0] != 0:
-                new_row[0] = 0
-            if row[-1] != 0:
-                new_row[-1] = 0
-            if row[1] != 0 and i >= 7:
-                new_row[1] = 0
-            if row[-2] != 0 and i >= 7:
-                new_row[-2] = 0
+            new_row = list(row)
         result.append(new_row)
     return result
 
+
+# ═══════════════════════════════════════════════════════════════
+#  精灵字典
+# ═══════════════════════════════════════════════════════════════
+
 _BASE_SPRITES = {
-    'idle': [SPRITE_IDLE, SPRITE_BLINK],
+    'idle': [SPRITE_IDLE],
+    'blink': [SPRITE_BLINK],
     'happy': [SPRITE_HAPPY],
-    'hungry': [SPRITE_HUNGRY, SPRITE_IDLE],
+    'walk': [SPRITE_WALK_A, SPRITE_WALK_B],
+    'run': [SPRITE_RUN_A, SPRITE_RUN_B],
+    'hop': [SPRITE_HOP],
+    'hungry': [SPRITE_HUNGRY],
     'dirty': [SPRITE_DIRTY],
     'sad': [SPRITE_SAD],
     'sick': [SPRITE_SICK],
@@ -410,17 +519,15 @@ _BASE_SPRITES = {
     'dead': [SPRITE_DEAD],
     'lonely': [SPRITE_LONELY],
     'dizzy': [SPRITE_DIZZY],
-    'walk': [SPRITE_WALK_A, SPRITE_WALK_B],
-    'run': [SPRITE_RUN_A, SPRITE_RUN_B],
-    'hop': [SPRITE_HOP],
     'yawn': [SPRITE_YAWN],
     'sit': [SPRITE_SIT],
     'look_left': [SPRITE_LOOK_LEFT],
     'look_right': [SPRITE_LOOK_RIGHT],
     'look_up': [SPRITE_LOOK_UP],
+    'dragging': [SPRITE_DRAGGING],
 }
 
-SPRITES: Dict[str, Dict[str, List[List[List[int]]]]] = {
+SPRITES = {
     'normal': {},
     'fat': {},
     'thin': {},
@@ -433,19 +540,33 @@ for state, frames in _BASE_SPRITES.items():
 
 
 # ═══════════════════════════════════════════════════════════════
-#  季节装饰配件（叠加在基础精灵图上）
-#  9 = 红色（围巾）, 10 = 粉色（花瓣）, 11 = 青色（冰饮）, 12 = 棕色（贝雷帽）
+#  季节配件
 # ═══════════════════════════════════════════════════════════════
 
-SEASON_COLORS: Dict[int, str] = {
+SEASON_COLORS = {
     9: '#E74C3C',    # 红色 - 围巾
-    10: '#FFB6C1',   # 粉色 - 花瓣
+    10: '#FFB7C5',   # 春 - 粉色花瓣
     11: '#5DADE2',   # 青色 - 冰饮
     12: '#8B4513',   # 棕色 - 贝雷帽
-    13: '#F4D03F',   # 黄色 - 落叶
-    14: '#FFFFFF',   # 白色 - 冰块/雪
+    13: '#FF6347',   # 秋 - 红叶
+    14: '#FFFFFF',   # 冬 - 白雪/冰块
+    # 动画道具颜色
+    23: '#FFD700',   # 金色 - 星星
+    24: '#FF69B4',   # 粉色 - 爱心
+    25: '#87CEEB',   # 天蓝 - 彩虹蓝
+    26: '#98FB98',   # 浅绿 - 彩虹绿
+    27: '#4A4A4A',   # 深灰 - 噩梦内部
+    28: '#FFD700',   # 金黄 - 闪电
+    29: '#FF4500',   # 橙红 - 怒气/感叹号
+    30: '#D2691E',   # 棕色 - 饼干
+    31: '#8B4513',   # 深棕 - 饼干点
+    32: '#9370DB',   # 紫色 - 音符
+    33: '#FF69B4',   # 粉色 - 蝴蝶
 }
 
+ANIMATION_COLORS = SEASON_COLORS.copy()
+
+# 季节配件精灵
 # 冬天 - 红色围巾（绕在脖子上）
 ACCESSORY_SCARF: List[List[int]] = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -499,7 +620,7 @@ ACCESSORY_BERET: List[List[int]] = [
 ]
 
 # 季节配件映射
-SEASON_ACCESSORIES: Dict[str, List[List[int]]] = {
+SEASON_ACCESSORIES = {
     'winter': ACCESSORY_SCARF,
     'spring': ACCESSORY_FLOWER,
     'summer': ACCESSORY_DRINK,
@@ -510,30 +631,6 @@ SEASON_ACCESSORIES: Dict[str, List[List[int]]] = {
 # ═══════════════════════════════════════════════════════════════
 #  动画道具像素图
 # ═══════════════════════════════════════════════════════════════
-
-# 动画相关颜色
-ANIMATION_COLORS: Dict[int, str] = {
-    15: '#A0A0A0',  # 金属灰 - 喷头主体
-    16: '#606060',  # 深灰 - 喷孔
-    17: '#87CEEB',  # 浅蓝 - 水滴
-    18: '#FFFFFF',  # 白色 - 米饭
-    19: '#1A1A1A',  # 黑色 - 海苔
-    20: '#2D2D2D',  # 深灰 - 手柄主体
-    21: '#4A4A4A',  # 浅灰 - 按钮区
-    22: '#4169E1',  # 蓝色 - 手柄灯条
-    # 梦境/新增元素颜色
-    23: '#FFD700',  # 金色 - 星星
-    24: '#FF69B4',  # 粉色 - 爱心
-    25: '#87CEEB',  # 天蓝 - 彩虹蓝
-    26: '#90EE90',  # 浅绿 - 彩虹绿
-    27: '#4B0082',  # 深紫 - 噩梦云
-    28: '#FFD700',  # 亮黄 - 闪电
-    29: '#FF4500',  # 红橙 - 惊叹号/愤怒标记
-    30: '#8B4513',  # 棕色 - 饼干
-    31: '#D2691E',  # 巧克力点
-    32: '#FF1493',  # 深粉 - 音符
-    33: '#00CED1',  # 深青 - 蝴蝶翅膀
-}
 
 # 喷头 (6 wide x 3 tall)
 SPRITE_SHOWER_HEAD: List[List[int]] = [
@@ -559,11 +656,57 @@ SPRITE_PS4_CONTROLLER: List[List[int]] = [
     [0,   0, 20, 20, 20,  0,  0],
 ]
 
+# 动画相关颜色（补充到ANIMATION_COLORS）
+ANIMATION_COLORS.update({
+    15: '#A0A0A0',  # 金属灰 - 喷头主体
+    16: '#606060',  # 深灰 - 喷孔
+    17: '#87CEEB',  # 浅蓝 - 水滴
+    18: '#FFFFFF',  # 白色 - 米饭
+    19: '#1A1A1A',  # 黑色 - 海苔
+    20: '#2D2D2D',  # 深灰 - 手柄主体
+    21: '#4A4A4A',  # 浅灰 - 按钮区
+    22: '#4169E1',  # 蓝色 - 手柄灯条
+})
+
+# 道具颜色
+ITEM_COLORS = {
+    # 冒险帽（绿色系）
+    40: '#4A7C4E',  # 森林绿 - 帽身
+    41: '#6B9E6F',  # 浅绿 - 帽子高光
+    42: '#3D5940',  # 深绿 - 帽子阴影
+
+    # 蝴蝶结（粉色系）
+    43: '#FF69B4',  # 粉色 - 主色
+    44: '#FF8DC7',  # 浅粉 - 高光
+    45: '#DB4B8A',  # 深粉 - 阴影
+
+    # 睡帽（蓝色系）
+    46: '#4169E1',  # 皇家蓝 - 主色
+    47: '#87CEEB',  # 天蓝 - 条纹
+    48: '#2D4A8B',  # 深蓝 - 阴影
+
+    # 眼镜
+    49: '#2D2D2D',  # 黑色框
+    50: '#4A4A4A',  # 灰色框
+
+    # 围巾（红色系）
+    51: '#DC2626',  # 红色 - 主色
+    52: '#EF4444',  # 浅红 - 高光
+    53: '#B91C1C',  # 深红 - 阴影
+
+    # 皇冠（金色系）
+    54: '#F59E0B',  # 金色 - 主色
+    55: '#FCD34D',  # 浅金 - 高光
+    56: '#D97706',  # 深金 - 阴影
+    57: '#EF4444',  # 红宝石
+    58: '#3B82F6',  # 蓝宝石
+}
+
+
 # ═══════════════════════════════════════════════════════════════
-#  梦境气泡 (8 wide x 6 tall)
+#  梦境系统
 # ═══════════════════════════════════════════════════════════════
 
-# 美梦气泡框架
 SPRITE_DREAM_CLOUD: List[List[int]] = [
     [0, 14, 14, 14, 14, 14, 14, 0],
     [14,  4,  4,  4,  4,  4,  4, 14],
@@ -573,7 +716,6 @@ SPRITE_DREAM_CLOUD: List[List[int]] = [
     [0,  0, 14, 14, 14,  0,  0,  0],
 ]
 
-# 噩梦气泡框架
 SPRITE_NIGHTMARE_CLOUD: List[List[int]] = [
     [0,  7,  7,  7,  7,  7,  7, 0],
     [7, 27, 27, 27, 27, 27, 27, 7],
@@ -583,7 +725,6 @@ SPRITE_NIGHTMARE_CLOUD: List[List[int]] = [
     [0,  0,  7,  7,  7,  0,  0, 0],
 ]
 
-# 梦境图标 (3x3)
 DREAM_ICON_STAR: List[List[int]] = [
     [0, 23, 0],
     [23, 23, 23],
@@ -602,7 +743,6 @@ DREAM_ICON_RAINBOW: List[List[int]] = [
     [25, 25, 25],
 ]
 
-# 噩梦图标 (3x3)
 NIGHTMARE_ICON_LIGHTNING: List[List[int]] = [
     [0, 28, 28],
     [28, 28, 0],
@@ -621,11 +761,14 @@ NIGHTMARE_ICON_EXCLAIM: List[List[int]] = [
     [0, 29, 0],
 ]
 
+DREAM_ICONS_GOOD = [DREAM_ICON_STAR, DREAM_ICON_HEART, DREAM_ICON_RAINBOW]
+DREAM_ICONS_BAD = [NIGHTMARE_ICON_LIGHTNING, NIGHTMARE_ICON_SKULL, NIGHTMARE_ICON_EXCLAIM]
+
+
 # ═══════════════════════════════════════════════════════════════
 #  睡眠打扰精灵图
 # ═══════════════════════════════════════════════════════════════
 
-# 迷迷糊糊 - 一只眼睁开一只半闭
 SPRITE_SLEEPY_DISTURBED: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -638,7 +781,6 @@ SPRITE_SLEEPY_DISTURBED: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
-# 不耐烦 - 皱眉 + 怒气标记
 SPRITE_ANNOYED_SLEEPY: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 29, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 29, 1, 0],
@@ -651,7 +793,6 @@ SPRITE_ANNOYED_SLEEPY: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
-# 超级不爽 - 生气 + 黑眼圈
 SPRITE_SUPER_ANNOYED: List[List[int]] = [
     [0, 1, 1, 0, 29, 29, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -664,7 +805,6 @@ SPRITE_SUPER_ANNOYED: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
-# 被安慰 - 开心闭眼
 SPRITE_COMFORTED: List[List[int]] = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
@@ -677,11 +817,11 @@ SPRITE_COMFORTED: List[List[int]] = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 ]
 
+
 # ═══════════════════════════════════════════════════════════════
 #  随机开心事件配件
 # ═══════════════════════════════════════════════════════════════
 
-# 蝴蝶 (5 wide x 4 tall)
 SPRITE_BUTTERFLY: List[List[int]] = [
     [33, 0, 0, 0, 33],
     [33, 33, 2, 33, 33],
@@ -689,14 +829,12 @@ SPRITE_BUTTERFLY: List[List[int]] = [
     [0,  0, 2, 0,  0],
 ]
 
-# 饼干 (4 wide x 3 tall)
 SPRITE_COOKIE: List[List[int]] = [
     [0, 30, 30, 0],
     [30, 31, 30, 30],
     [0, 30, 31, 0],
 ]
 
-# 音符 (3 wide x 5 tall)
 SPRITE_MUSIC_NOTE: List[List[int]] = [
     [0, 32, 32],
     [0, 32, 0],
@@ -705,11 +843,17 @@ SPRITE_MUSIC_NOTE: List[List[int]] = [
     [32, 32, 0],
 ]
 
+HAPPY_EVENT_SPRITES = {
+    'butterfly': SPRITE_BUTTERFLY,
+    'cookie': SPRITE_COOKIE,
+    'music': SPRITE_MUSIC_NOTE,
+}
+
+
 # ═══════════════════════════════════════════════════════════════
 #  阅读论文精灵图
 # ═══════════════════════════════════════════════════════════════
 
-# 阅读中 - 戴眼镜
 SPRITE_READING: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -722,7 +866,6 @@ SPRITE_READING: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
-# 阅读中眼睛左看
 SPRITE_READING_LEFT: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -735,7 +878,6 @@ SPRITE_READING_LEFT: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
-# 阅读中眼睛右看
 SPRITE_READING_RIGHT: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -748,7 +890,6 @@ SPRITE_READING_RIGHT: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
-# 推眼镜帧1
 SPRITE_PUSH_GLASSES_1: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -761,7 +902,6 @@ SPRITE_PUSH_GLASSES_1: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
-# 推眼镜帧2
 SPRITE_PUSH_GLASSES_2: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
     [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
@@ -774,12 +914,16 @@ SPRITE_PUSH_GLASSES_2: List[List[int]] = [
     [0, 1, 1, 0, 0, 0, 0, 1, 1, 0],
 ]
 
-# 论文配件 (4 wide x 3 tall)
 SPRITE_PAPER: List[List[int]] = [
     [14, 14, 14, 14],
     [14,  7, 14,  7],
     [14, 14, 14, 14],
 ]
+
+
+# ═══════════════════════════════════════════════════════════════
+#  注册额外精灵
+# ═══════════════════════════════════════════════════════════════
 
 _EXTRA_SPRITES = {
     'sleepy_disturbed': [SPRITE_SLEEPY_DISTURBED],
@@ -795,17 +939,10 @@ for state, frames in _EXTRA_SPRITES.items():
     SPRITES['fat'][state] = [_make_fat(f) for f in frames]
     SPRITES['thin'][state] = [_make_thin(f) for f in frames]
 
-# 梦境图标列表
-DREAM_ICONS_GOOD = [DREAM_ICON_STAR, DREAM_ICON_HEART, DREAM_ICON_RAINBOW]
-DREAM_ICONS_BAD = [NIGHTMARE_ICON_LIGHTNING, NIGHTMARE_ICON_SKULL, NIGHTMARE_ICON_EXCLAIM]
 
-# 随机开心事件配件列表
-HAPPY_EVENT_SPRITES = {
-    'butterfly': SPRITE_BUTTERFLY,
-    'cookie': SPRITE_COOKIE,
-    'music': SPRITE_MUSIC_NOTE,
-}
-
+# ═══════════════════════════════════════════════════════════════
+#  辅助函数
+# ═══════════════════════════════════════════════════════════════
 
 def get_current_season() -> str:
     """根据当前月份获取季节"""
@@ -828,10 +965,11 @@ def get_season_accessory() -> List[List[int]]:
 
 
 def get_all_colors(vitality: float) -> Dict[int, str]:
-    """获取所有颜色（包括基础色、季节配件色、动画道具色）"""
+    """获取所有颜色（包括基础色、季节配件色、动画道具色、道具色）"""
     colors = get_dynamic_colors(vitality)
     colors.update(SEASON_COLORS)
     colors.update(ANIMATION_COLORS)
+    colors.update(ITEM_COLORS)
     return colors
 
 
@@ -846,9 +984,12 @@ def get_sprite_size() -> tuple:
 
 
 def get_canvas_size(body_type: str = 'normal') -> tuple:
+    """获取画布尺寸（包含轮廓线空间）"""
     pad = PIXEL_SIZE * 2
     width = 12 if body_type == 'fat' else 10
-    return (width * PIXEL_SIZE + pad * 2, 9 * PIXEL_SIZE + pad * 2)
+    # 额外 +2 是为轮廓线预留空间
+    return (width * PIXEL_SIZE + pad * 2 + PIXEL_SIZE * 2, 
+            9 * PIXEL_SIZE + pad * 2 + PIXEL_SIZE * 2)
 
 
 def get_sprite(body_type: str, state: str) -> List[List[List[int]]]:
